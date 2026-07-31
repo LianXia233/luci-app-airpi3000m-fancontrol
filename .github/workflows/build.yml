@@ -21,7 +21,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # 标签发布时禁止取消，普通分支构建仍允许取消旧运行
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   # Airpi AP3000M = MediaTek MT7981B (Filogic) / aarch64_cortex-a53
@@ -134,6 +135,10 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
+    # 发布任务单独加并发控制，绝对不允许被取消
+    concurrency:
+      group: release-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -215,9 +220,22 @@ jobs:
           set -euo pipefail
           TAG="${{ steps.prep.outputs.tag }}"
           TITLE="AirPi AP3000M 风扇控制 ${TAG}"
+
+          echo "===== 当前 tag ====="
+          echo "$TAG"
+          echo "===== release 目录内容 ====="
+          ls -lh release/ || true
+
+          if [ -z "$(ls -A release 2>/dev/null)" ]; then
+            echo "::error::release 目录为空，没有找到任何 .ipk/.apk 文件"
+            exit 1
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "标签已存在，执行 upload + edit"
             gh release upload "$TAG" release/* --clobber
             gh release edit "$TAG" --title "$TITLE" --notes-file RELEASE_NOTES.md
           else
+            echo "标签不存在，执行 create"
             gh release create "$TAG" release/* --title "$TITLE" --notes-file RELEASE_NOTES.md
           fi
