@@ -1,0 +1,223 @@
+name: 编译与发布
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '发布标签（留空则只上传构建产物，不创建 Release）'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Airpi AP3000M = MediaTek MT7981B (Filogic) / aarch64_cortex-a53
+  TARGET: mediatek
+  SUBTARGET: filogic
+  PKG_ARCH: aarch64_cortex-a53
+
+jobs:
+  build:
+    name: 编译 ${{ matrix.tag }} (OpenWrt ${{ matrix.version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '24.10.8'
+            sdk: 'openwrt-sdk-24.10.8-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64'
+            tag: 'ipk'
+          - version: '25.12.5'
+            sdk: 'openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64'
+            tag: 'apk'
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+        with:
+          path: pkgsrc
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gettext git bc \
+            libncurses-dev libssl-dev libelf-dev python3 python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget zstd
+
+      - name: 下载并解压 OpenWrt SDK
+        run: |
+          set -euxo pipefail
+          URL="https://downloads.openwrt.org/releases/${{ matrix.version }}/targets/${TARGET}/${SUBTARGET}/${{ matrix.sdk }}.tar.zst"
+          echo "SDK: $URL"
+          wget -q -O sdk.tar.zst "$URL"
+          mkdir -p "$GITHUB_WORKSPACE/sdk"
+          tar --zstd -xf sdk.tar.zst -C "$GITHUB_WORKSPACE/sdk" --strip-components=1
+          rm -f sdk.tar.zst
+
+      - name: 更新并安装 feeds
+        working-directory: sdk
+        run: |
+          set -euxo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 链接本仓库软件包
+        working-directory: sdk
+        run: |
+          set -euxo pipefail
+          ln -sfn "$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol" package/luci-app-airpi-fancontrol
+          ln -sfn "$GITHUB_WORKSPACE/pkgsrc/airpi-gpio-fan" package/airpi-gpio-fan
+          ls -l package/ | grep airpi
+
+      - name: 生成编译配置
+        working-directory: sdk
+        run: |
+          set -euxo pipefail
+          # 先生成 SDK 默认配置，保留目标平台设定，再追加本项目的包
+          make defconfig
+          cat >> .config <<'EOF'
+          CONFIG_PACKAGE_luci-app-airpi-fancontrol=m
+          CONFIG_PACKAGE_kmod-airpi-gpio-fan=m
+          EOF
+          make defconfig
+          echo "----- 生效的相关配置 -----"
+          grep -E 'airpi' .config || { echo "::error::软件包未出现在 .config 中，请检查 Makefile 依赖"; exit 1; }
+
+      - name: 编译 luci-app-airpi-fancontrol
+        working-directory: sdk
+        run: make package/luci-app-airpi-fancontrol/compile V=s -j$(nproc)
+
+      - name: 编译 kmod-airpi-gpio-fan
+        working-directory: sdk
+        run: make package/airpi-gpio-fan/compile V=s -j$(nproc)
+
+      - name: 收集安装包
+        working-directory: sdk
+        run: |
+          set -euxo pipefail
+          OUT="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$OUT"
+          # 仅收集本项目产出的包，排除 SDK 自带的依赖包
+          find bin/ -type f \( -name '*airpi*.ipk' -o -name '*airpi*.apk' \) -exec cp -v {} "$OUT/" \;
+          echo "----- 产出清单 -----"
+          ls -lh "$OUT"
+          COUNT=$(find "$OUT" -type f \( -name '*.ipk' -o -name '*.apk' \) | wc -l)
+          if [ "$COUNT" -lt 2 ]; then
+            echo "::error::期望至少 2 个安装包（LuCI 应用 + 内核模块），实际只有 $COUNT 个"
+            exit 1
+          fi
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: airpi-fancontrol-${{ matrix.tag }}-openwrt-${{ matrix.version }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: 发布到 Releases
+    needs: build
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
+    permissions:
+      contents: write
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: 整理发布文件
+        id: prep
+        run: |
+          set -euxo pipefail
+          mkdir -p release
+          find dist -type f \( -name '*.ipk' -o -name '*.apk' \) -exec cp -v {} release/ \;
+          ls -lh release
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 生成中文发布说明
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.prep.outputs.tag }}"
+          {
+            echo "## AirPi AP3000M 风扇控制 ${TAG}"
+            echo
+            echo "本插件为 **Airpi AP3000M（MediaTek MT7981B / Filogic）** 专用，其他机型不适用。"
+            echo
+            echo "### 安装包说明"
+            echo
+            echo "| 格式 | 适用固件 | 包管理器 |"
+            echo "| --- | --- | --- |"
+            echo "| \`.ipk\` | OpenWrt 24.10.x 及更早版本 | opkg |"
+            echo "| \`.apk\` | OpenWrt 25.12.x 及更新版本 | apk |"
+            echo
+            echo "每种格式各含两个包："
+            echo
+            echo "- \`luci-app-airpi-fancontrol\`：LuCI 网页控制界面与温控守护进程（架构 all）"
+            echo "- \`kmod-airpi-gpio-fan\`：GPIO 软件 PWM 内核驱动（架构 aarch64_cortex-a53）"
+            echo
+            echo "> 内核模块与内核版本严格绑定，请选择与本机固件大版本一致的安装包。"
+            echo
+            echo "### 安装方法"
+            echo
+            echo '```sh'
+            echo "# OpenWrt 25.12 及以上（apk）"
+            echo "apk add --allow-untrusted ./luci-app-airpi-fancontrol-*.apk ./kmod-airpi-gpio-fan-*.apk"
+            echo
+            echo "# OpenWrt 24.10 及以下（ipk）"
+            echo "opkg install ./luci-app-airpi-fancontrol_*.ipk ./kmod-airpi-gpio-fan_*.ipk"
+            echo '```'
+            echo
+            if [ -f CHANGELOG.md ]; then
+              SECTION=$(awk -v tag="${TAG#v}" '
+                !flag && (index($0, "## [" tag "]") == 1 || index($0, "## " tag) == 1) { flag=1; next }
+                flag && /^## / { exit }
+                flag { print }
+              ' CHANGELOG.md)
+              if [ -n "$SECTION" ]; then
+                echo "### 更新内容"
+                echo "$SECTION"
+              fi
+            fi
+            echo
+            echo "完整变更记录见 [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md)。"
+          } > RELEASE_NOTES.md
+          echo "----- 发布说明预览 -----"
+          cat RELEASE_NOTES.md
+
+      - name: 创建或更新 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.prep.outputs.tag }}"
+          TITLE="AirPi AP3000M 风扇控制 ${TAG}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$TAG" release/* --title "$TITLE" --notes-file RELEASE_NOTES.md
+          fi

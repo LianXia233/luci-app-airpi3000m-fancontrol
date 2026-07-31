@@ -1,4 +1,4 @@
 # Kbuild Makefile for airpi-gpio-fan kernel module
 obj-m := airpi-gpio-fan.o
 
-ccflags-y := -std=gnu11 -Wno-declaration-after-statement
+ccflags-y := -Wno-declaration-after-statement

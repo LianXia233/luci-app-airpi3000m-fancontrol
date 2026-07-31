@@ -24,9 +24,10 @@
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
 #include <linux/delay.h>
+#include <linux/version.h>
 
 #define DRV_NAME    "airpi_gpio_fan"
-#define DRV_VERSION "3.0.0"
+#define DRV_VERSION "3.1.0"
 
 /* Module parameters */
 static int fangpio = 540;
@@ -67,14 +68,12 @@ static DEFINE_MUTEX(pwm_mutex);
 static enum hrtimer_restart pwm_timer_cb(struct hrtimer *timer)
 {
 	static unsigned int tick;
-	ktime_t now, next;
 	unsigned long on_ticks;
 	unsigned int slice_us;
 
 	if (!fanen) {
 		gpio_set_value(fangpio, 0);
 		tick = 0;
-		next = ktime_add(ktime_get(), kperiod);
 		hrtimer_forward(timer, ktime_get(), kperiod);
 		return HRTIMER_RESTART;
 	}
@@ -94,9 +93,8 @@ static enum hrtimer_restart pwm_timer_cb(struct hrtimer *timer)
 	if (tick >= PWM_TICKS)
 		tick = 0;
 
-	now = ktime_get();
-	next = ktime_add_ns(now, (u64)slice_us * 1000ULL);
-	hrtimer_forward(timer, now, ktime_set(0, slice_us * 1000));
+	hrtimer_forward(timer, ktime_get(),
+			ktime_set(0, (long)slice_us * 1000L));
 	return HRTIMER_RESTART;
 }
 
@@ -114,10 +112,15 @@ static void start_pwm_timer(void)
 	if (slice_us < 1)
 		slice_us = 1;
 
-	kperiod = ktime_set(0, period * 1000);
+	kperiod = ktime_set(0, (long)period * 1000L);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+	hrtimer_setup(&pwm_timer, pwm_timer_cb, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+#else
 	hrtimer_init(&pwm_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	pwm_timer.function = pwm_timer_cb;
-	hrtimer_start(&pwm_timer, ktime_set(0, slice_us * 1000), HRTIMER_MODE_REL);
+#endif
+	hrtimer_start(&pwm_timer, ktime_set(0, (long)slice_us * 1000L),
+		      HRTIMER_MODE_REL);
 	timer_running = 1;
 	mutex_unlock(&pwm_mutex);
 
@@ -137,8 +140,6 @@ static void stop_pwm_timer(void)
 }
 
 /* ---- /sys/kernel/duty_cycle ---- */
-static struct kobject *fan_kobj;
-
 static ssize_t duty_cycle_show(struct kobject *kobj,
 			       struct kobj_attribute *attr, char *buf)
 {
@@ -166,15 +167,6 @@ static ssize_t duty_cycle_store(struct kobject *kobj,
 static struct kobj_attribute duty_cycle_attr =
 	__ATTR(duty_cycle, 0664, duty_cycle_show, duty_cycle_store);
 
-static struct attribute *fan_attrs[] = {
-	&duty_cycle_attr.attr,
-	NULL,
-};
-
-static struct attribute_group fan_attr_group = {
-	.attrs = fan_attrs,
-};
-
 /* ---- module init / exit ---- */
 
 static int __init airpi_gpio_fan_init(void)
@@ -182,6 +174,18 @@ static int __init airpi_gpio_fan_init(void)
 	int ret;
 
 	pr_info(DRV_NAME ": AirPi GPIO soft-PWM fan driver v%s loading\n", DRV_VERSION);
+
+	/* Sanity-check module parameters before they reach the timer maths */
+	if (period < PWM_TICKS || period > 1000000) {
+		pr_warn(DRV_NAME ": period=%d out of range, falling back to 15000 us\n",
+			period);
+		period = 15000;
+	}
+	if (cycle < 1 || cycle > 255) {
+		pr_warn(DRV_NAME ": cycle=%d out of range, falling back to 255\n", cycle);
+		cycle = 255;
+	}
+
 	pr_info(DRV_NAME ": GPIO=%d, cycle=%d, period=%d us, fanen=%d\n",
 		fangpio, cycle, period, fanen);
 
@@ -199,18 +203,14 @@ static int __init airpi_gpio_fan_init(void)
 		return ret;
 	}
 
-	/* Create sysfs entry */
-	fan_kobj = kobject_create_and_add("kernel", NULL);
-	if (!fan_kobj) {
-		pr_err(DRV_NAME ": Failed to create kernel kobject\n");
-		gpio_free(fangpio);
-		return -ENOMEM;
-	}
-
-	ret = sysfs_create_group(fan_kobj, &fan_attr_group);
+	/*
+	 * Attach the attribute to the existing /sys/kernel kobject exported by
+	 * the kernel. Creating our own kobject named "kernel" would collide
+	 * with it and fail, leaving userspace without /sys/kernel/duty_cycle.
+	 */
+	ret = sysfs_create_file(kernel_kobj, &duty_cycle_attr.attr);
 	if (ret) {
-		pr_err(DRV_NAME ": Failed to create sysfs group (err=%d)\n", ret);
-		kobject_put(fan_kobj);
+		pr_err(DRV_NAME ": Failed to create /sys/kernel/duty_cycle (err=%d)\n", ret);
 		gpio_free(fangpio);
 		return ret;
 	}
@@ -226,12 +226,11 @@ static void __exit airpi_gpio_fan_exit(void)
 {
 	stop_pwm_timer();
 
+	sysfs_remove_file(kernel_kobj, &duty_cycle_attr.attr);
+
 	/* Output LOW on exit to stop fan */
 	gpio_set_value(fangpio, 0);
 	gpio_free(fangpio);
-
-	sysfs_remove_group(fan_kobj, &fan_attr_group);
-	kobject_put(fan_kobj);
 
 	pr_info(DRV_NAME ": Module unloaded\n");
 }

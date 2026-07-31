@@ -2,55 +2,57 @@
 # Copyright (C) 2024-2026 AirPi OpenWrt Community
 # This is free software, licensed under the GNU General Public License v2.
 #
+# luci-app-airpi-fancontrol
+#   Fan control web UI for the AirPi AP3000M (MediaTek MT7981B / filogic).
+#
+# Deliberately built on plain package.mk instead of luci.mk so that the
+# repository can be dropped into any OpenWrt SDK's package/ directory
+# without requiring the LuCI feed source tree to be present.
+#
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-airpi-fancontrol
-PKG_VERSION:=3.0.0
+PKG_VERSION:=3.1.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community
 PKG_LICENSE:=GPL-2.0-only
-PKG_LICENSE_FILES:=LICENSE
-
-LUCI_TITLE:=LuCI Support for AirPi Fan Control (unified soft-PWM + hard-PWM)
-LUCI_DEPENDS:=+kmod-hwmon-pwmfan +luci-lua-runtime
-LUCI_PKGARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
-include ../../luci.mk
 
-# === Kernel module: kmod-airpi-gpio-fan ===
-define KernelPackage/airpi-gpio-fan
-  SUBMENU:=Other modules
-  TITLE:=AirPi GPIO soft-PWM fan driver
-  DEPENDS:=@TARGET_aarch64_cortex-a53 +kmod-hwmon-core
-  KCONFIG:=
-  FILES:=$(PKG_BUILD_DIR)/airpi-gpio-fan.ko
-  AUTOLOAD:=$(call AutoProbe,airpi-gpio-fan)
+define Package/$(PKG_NAME)
+  SECTION:=luci
+  CATEGORY:=LuCI
+  SUBMENU:=3. Applications
+  TITLE:=LuCI support for AirPi AP3000M fan control
+  PKGARCH:=all
+  DEPENDS:=+luci-compat +luci-lua-runtime +kmod-hwmon-pwmfan
+  URL:=https://github.com/LianXia233/luci-app-airpi3000m-fancontrol
 endef
 
-define KernelPackage/airpi-gpio-fan/description
-  GPIO bit-bang soft-PWM fan driver for AirPi AP3000M.
-  Creates /sys/kernel/duty_cycle to control fan speed (0-255).
-  Parameters: fangpio (GPIO pin), cycle (max duty), period (PWM period us).
+define Package/$(PKG_NAME)/description
+  Temperature driven fan control for the AirPi AP3000M 5G CPE.
+
+  Supports both the hardware PWM fan (pwm-fan / hwmon) and the GPIO
+  soft-PWM driver provided by kmod-airpi-gpio-fan. Offers manual,
+  stepless and automatic temperature-curve modes from the LuCI web UI.
+endef
+
+define Package/$(PKG_NAME)/conffiles
+/etc/config/airpi-fan
 endef
 
 define Build/Prepare
-	$(call Build/Prepare/Default)
-	$(CP) ./src/* $(PKG_BUILD_DIR)/
+endef
+
+define Build/Configure
 endef
 
 define Build/Compile
-	$(MAKE) -C "$(LINUX_DIR)" \
-		ARCH="$(LINUX_KARCH)" \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
-		M="$(PKG_BUILD_DIR)" \
-		KERNEL_DIR="$(LINUX_DIR)" \
-		modules
 endef
 
-define Package/luci-app-airpi-fancontrol/install
+define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/airpi-fancontrol $(1)/etc/init.d/airpi-fancontrol
 
@@ -62,14 +64,32 @@ define Package/luci-app-airpi-fancontrol/install
 	$(INSTALL_BIN) ./files/usr/bin/get_sys_temp.sh $(1)/usr/bin/get_sys_temp.sh
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
-	$(INSTALL_DATA) ./files/usr/lib/lua/luci/controller/airpi-fancontrol.lua $(1)/usr/lib/lua/luci/controller/airpi-fancontrol.lua
+	$(INSTALL_DATA) ./files/usr/lib/lua/luci/controller/airpi-fancontrol.lua \
+		$(1)/usr/lib/lua/luci/controller/airpi-fancontrol.lua
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi
-	$(INSTALL_DATA) ./files/usr/lib/lua/luci/model/cbi/airpi-fancontrol.lua $(1)/usr/lib/lua/luci/model/cbi/airpi-fancontrol.lua
+	$(INSTALL_DATA) ./files/usr/lib/lua/luci/model/cbi/airpi-fancontrol.lua \
+		$(1)/usr/lib/lua/luci/model/cbi/airpi-fancontrol.lua
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/airpi-fancontrol
-	$(INSTALL_DATA) ./files/usr/lib/lua/luci/view/airpi-fancontrol/fan_status.htm $(1)/usr/lib/lua/luci/view/airpi-fancontrol/fan_status.htm
+	$(INSTALL_DATA) ./files/usr/lib/lua/luci/view/airpi-fancontrol/fan_status.htm \
+		$(1)/usr/lib/lua/luci/view/airpi-fancontrol/fan_status.htm
 endef
 
-$(eval $(call BuildPackage,luci-app-airpi-fancontrol))
-$(eval $(call KernelPackage,airpi-gpio-fan))
+define Package/$(PKG_NAME)/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] && exit 0
+/etc/init.d/airpi-fancontrol enable >/dev/null 2>&1
+rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null
+exit 0
+endef
+
+define Package/$(PKG_NAME)/prerm
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] && exit 0
+/etc/init.d/airpi-fancontrol stop >/dev/null 2>&1
+/etc/init.d/airpi-fancontrol disable >/dev/null 2>&1
+exit 0
+endef
+
+$(eval $(call BuildPackage,$(PKG_NAME)))
