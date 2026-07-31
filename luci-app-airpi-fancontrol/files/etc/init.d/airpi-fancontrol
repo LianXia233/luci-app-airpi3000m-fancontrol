@@ -1,0 +1,80 @@
+#!/bin/sh /etc/rc.common
+# AirPi Fan Control unified init script
+# Part of luci-app-airpi-fancontrol v3.0.0
+
+START=99
+STOP=10
+
+PROGRAM="airpi-fancontrol"
+CONFIG_FILE="/etc/config/airpi-fan"
+PID_FILE="/var/run/airpi-fancontrol.pid"
+
+printMsg() {
+    local msg="$1"
+    logger -t "${PROGRAM}" "${msg}"
+}
+
+load_softpwm_driver() {
+    local gpio freq
+    config_get gpio settings fan_gpio "540"
+    config_get freq settings fan_freq "15000"
+
+    rmmod Airpi-gpio-fan 2>/dev/null
+    rmmod Airpi_gpio_fan 2>/dev/null
+
+    insmod /lib/modules/$(uname -r)/airpi-gpio-fan.ko \
+        fangpio=$gpio cycle=255 period=$freq fanen=1
+
+    printMsg "soft-PWM driver loaded (GPIO=$gpio, period=$freq us)"
+}
+
+start_service() {
+    local driver
+
+    [ -f "$CONFIG_FILE" ] || {
+        printMsg "Config file not found, using defaults"
+        driver="softpwm"
+    }
+
+    config_load airpi-fan
+    config_get driver settings fan_driver "softpwm"
+
+    if [ "$driver" != "pwm" ]; then
+        load_softpwm_driver
+    else
+        printMsg "Using hardware PWM driver (pwm-fan)"
+    fi
+
+    /usr/bin/fancts.sh &
+    printMsg "AirPi fan control service started"
+}
+
+stop_service() {
+    # Kill the fan control daemon
+    if [ -f "$PID_FILE" ]; then
+        local pid=$(cat "$PID_FILE" 2>/dev/null)
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null
+        rm -f "$PID_FILE"
+    fi
+
+    # Kill any remaining fancts.sh instances
+    for pid in $(pgrep -f fancts.sh 2>/dev/null); do
+        kill "$pid" 2>/dev/null
+    done
+
+    # Stop fan: set PWM to minimum
+    if [ -d /sys/devices/platform/pwm-fan/hwmon/hwmon2 ]; then
+        echo 64 > /sys/devices/platform/pwm-fan/hwmon/hwmon2/pwm1 2>/dev/null
+    fi
+    if [ -w /sys/kernel/duty_cycle ]; then
+        echo 0 > /sys/kernel/duty_cycle 2>/dev/null
+    fi
+
+    printMsg "AirPi fan control service stopped"
+}
+
+restart() {
+    stop_service
+    sleep 1
+    start_service
+}

@@ -1,0 +1,279 @@
+--[[
+LuCI airpi-fancontrol - Controller (v3.0.0)
+Part of luci-app-airpi-fancontrol
+Provides REST API endpoints for fan speed control and status polling.
+--]]
+
+module("luci.controller.airpi-fancontrol", package.seeall)
+
+local http  = require "luci.http"
+local json  = require "luci.jsonc"
+local nixio = require "nixio"
+local fs    = require "nixio.fs"
+local uci   = require "luci.model.uci".cursor()
+
+local PWM_PATH   = "/sys/devices/platform/pwm-fan/hwmon/hwmon2/pwm1"
+local DUTY_PATH  = "/sys/kernel/duty_cycle"
+local SPEED_CONF = "/usr/bin/fanspeed.conf"
+local FANVAL     = "/etc/fanvall"
+local FANVALV    = "/etc/fanvallv.conf"
+
+-- =====================================================================
+--  Helper: write fan speed to both PWM interfaces
+-- =====================================================================
+local function write_fan_speed(val)
+    local v = tostring(val)
+    if fs.access(PWM_PATH, "w") then
+        local f = io.open(PWM_PATH, "w"); if f then f:write(v); f:close() end
+    end
+    if fs.access(DUTY_PATH, "w") then
+        local f = io.open(DUTY_PATH, "w"); if f then f:write(v); f:close() end
+    end
+    local f = io.open(SPEED_CONF, "w"); if f then f:write(v); f:close() end
+end
+
+-- =====================================================================
+--  Helper: kill fancts.sh daemon
+-- =====================================================================
+local function kill_fan_daemon()
+    local h = io.popen("pgrep -f fancts.sh")
+    local pid = h:read("*a"); h:close()
+    if pid and pid ~= "" then
+        pid = pid:match("%d+")
+        if pid then os.execute("kill -9 " .. pid) end
+    end
+end
+
+-- =====================================================================
+--  Common boilerplate for action endpoints
+-- =====================================================================
+local function parse_request()
+    local rv = {}
+    rv.p    = http.formvalue("p") or ""
+    rv.set  = http.formvalue("set") or ""
+    rv.port = string.gsub(rv.p, "\"", "~")
+    rv.at   = rv.set
+    return rv
+end
+
+local function json_reply(rv)
+    http.prepare_content("application/json")
+    http.write_json(rv)
+end
+
+-- =====================================================================
+--  Route registration
+-- =====================================================================
+function index()
+    entry({"admin", "status", "airpi-fan-status"},
+        template("airpi-fancontrol/fan_status"), _("风扇控制"), 94)
+
+    entry({"admin", "status", "airpi-fan-settings"},
+        cbi("airpi-fancontrol"), _("风扇设置"), 100)
+
+    entry({"admin", "airpi-fan", "fanstop"}, call("action_fanstop"))
+    entry({"admin", "airpi-fan", "fanst1"},  call("action_fanst1"))
+    entry({"admin", "airpi-fan", "fanst2"},  call("action_fanst2"))
+
+    local e3 = entry({"admin", "airpi-fan", "fanst3"}, call("action_fanst3"))
+    e3.sysauth = false; e3.leaf = true
+
+    local e4 = entry({"admin", "airpi-fan", "fanst4"}, call("action_fanst4"))
+    e4.sysauth = false; e4.leaf = true
+
+    entry({"admin", "airpi-fan", "fansttp"}, call("action_fansttp"))
+    entry({"admin", "airpi-fan", "fanst"},   call("action_fanst"))
+    entry({"admin", "airpi-fan", "fansvm"},  call("action_fansvm"))
+    entry({"admin", "airpi-fan", "fansvc"},  call("action_fansvc"))
+    entry({"admin", "airpi-fan", "fanswj"},  call("action_fanswj"))
+    entry({"admin", "airpi-fan", "fanswj2"}, call("action_fanswj2"))
+end
+
+-- =====================================================================
+--  fanstop: silent mode (25%)
+-- =====================================================================
+function action_fanstop()
+    local rv = parse_request()
+    kill_fan_daemon()
+    os.execute("echo 0 > " .. FANVAL)
+    write_fan_speed(64)
+    rv.result = "fanstop"
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fanst1: low speed (50%)
+-- =====================================================================
+function action_fanst1()
+    local rv = parse_request()
+    kill_fan_daemon()
+    os.execute("echo 1 > " .. FANVAL)
+    write_fan_speed(128)
+    rv.result = "fanst1"
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fanst2: normal speed (75%)
+-- =====================================================================
+function action_fanst2()
+    local rv = parse_request()
+    kill_fan_daemon()
+    os.execute("echo 2 > " .. FANVAL)
+    write_fan_speed(192)
+    rv.result = "fanst2"
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fanst3: full speed (100%)
+-- =====================================================================
+function action_fanst3()
+    local rv = parse_request()
+    kill_fan_daemon()
+    os.execute("echo 3 > " .. FANVAL)
+    write_fan_speed(255)
+    rv.result = "fanst3"
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fanst4: smart auto temperature control
+-- =====================================================================
+function action_fanst4()
+    local rv = parse_request()
+    kill_fan_daemon()
+    os.execute("echo 9 > " .. FANVAL)
+    os.execute("/usr/bin/fancts.sh &")
+    rv.result = "fanst4"
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fanswj: stepless speed control
+-- =====================================================================
+function action_fanswj()
+    local rv = parse_request()
+    kill_fan_daemon()
+    os.execute("echo 999 > " .. FANVAL)
+    write_fan_speed(rv.port)
+    rv.result = "fanswj"
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fanswj2: read current stepless speed for UI init
+-- =====================================================================
+function action_fanswj2()
+    local rv = parse_request()
+    kill_fan_daemon()
+    os.execute("echo 999 > " .. FANVAL)
+    local f = io.open(SPEED_CONF, "r")
+    if f then
+        rv.result = f:read("*a"):gsub("%s+$", "")
+        f:close()
+    else
+        rv.result = "255"
+    end
+    rv.at = rv.set
+    rv.port = rv.port
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fanst: query current fan status (speed + mode)
+-- =====================================================================
+function action_fanst()
+    local rv = parse_request()
+
+    local f = io.open(SPEED_CONF, "r")
+    if f then
+        rv.fanspd = f:read("*a"):gsub("%s+$", "")
+        f:close()
+    else
+        rv.fanspd = "0"
+    end
+
+    local h = io.popen("pgrep -f fancts.sh")
+    local pr = h:read("*a"); h:close()
+
+    local fvc = nil
+    local fv = io.open(FANVAL, "r")
+    if fv then fvc = fv:read("*a"); fv:close() end
+
+    if fvc and fvc:match("^%s*999%s*$") then
+        rv.fancts = "无极"
+    elseif pr ~= "" then
+        rv.fancts = "智能"
+    else
+        rv.fancts = "手动"
+    end
+
+    rv.at = rv.set; rv.port = rv.port
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fansttp: query current temperature and source type
+-- =====================================================================
+function action_fansttp()
+    local rv = parse_request()
+    local fansv = "CPU温度"
+    local temperature = 0
+
+    local conf = io.open(FANVALV, "r")
+    if conf then
+        local cfg = conf:read("*a"); conf:close()
+        if cfg:match("模组温度") then
+            fansv = "模组温度"
+            local h = io.popen("sendat 1 'AT^CHIPTEMP?' | grep CHIPTEMP | sed -n '1p' | cut -d, -f9 | sed '/^$/d'")
+            local out = h:read("*a"); h:close()
+            local tv = tonumber(out)
+            if tv then
+                temperature = tv / 10
+            else
+                temperature = "null"
+            end
+        end
+    end
+
+    if temperature == 0 or temperature == "null" then
+        local th = io.popen("/usr/bin/get_sys_temp.sh -s 2>/dev/null")
+        local line = th and th:read("*a") or ""
+        if th then th:close() end
+        local mc, src = line:match("(%d+)%s+(%w+)")
+        local mcn = tonumber(mc)
+        if mcn and mcn > 0 then
+            temperature = mcn / 1000
+            if src == "wifi" then fansv = "WiFi温度"
+            elseif src == "phy" then fansv = "网络温度"
+            else fansv = "CPU温度" end
+        else
+            fansv = "CPU温度"
+            temperature = "null"
+        end
+    end
+
+    rv.at = rv.set; rv.port = rv.port
+    rv.fansttp = temperature; rv.fansv = fansv
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fansvm / fansvc: switch temperature source
+-- =====================================================================
+function action_fansvm()
+    local rv = parse_request()
+    os.execute("echo 9 > " .. FANVAL)
+    os.execute("echo 模组温度 > " .. FANVALV)
+    rv.result = "fansvm"
+    json_reply(rv)
+end
+
+function action_fansvc()
+    local rv = parse_request()
+    os.execute("echo 9 > " .. FANVAL)
+    os.execute("echo CPU温度 > " .. FANVALV)
+    rv.result = "fansvc"
+    json_reply(rv)
+end

@@ -1,0 +1,5 @@
+config fan 'settings'
+	option fan_driver 'softpwm'
+	option fan_gpio '540'
+	option fan_freq '15000'
+	option fan_enable '1'

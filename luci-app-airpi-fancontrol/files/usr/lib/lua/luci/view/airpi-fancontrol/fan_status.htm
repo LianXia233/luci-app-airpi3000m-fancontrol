@@ -1,0 +1,377 @@
+<%+header%>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AirPi PWM 风扇控制台</title>
+
+<style>
+.fcx{--ac:#7c5cfc;--cy:#22d3ee;--gn:#34d399;--og:#fbbf24;--rd:#f87171;--pk:#f472b6;
+  --bg:#0b0d14;--c1:rgba(18,21,32,.94);--c2:rgba(26,30,44,.9);--c3:rgba(40,46,66,.7);--bd:rgba(255,255,255,.07);
+  --t1:#eef0f6;--t2:#9aa3b8;--t3:#3d4455;--r:18px;
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  color:var(--t1);max-width:760px;margin:0 auto;padding:18px 16px 56px;position:relative;z-index:1}
+.fcx.L{--bg:#eef1f8;--c1:rgba(255,255,255,.98);--c2:rgba(241,244,250,.96);--c3:rgba(232,236,245,.9);--bd:rgba(15,23,42,.08);--t1:#111827;--t2:#5b6477;--t3:#cbd2e0}
+@media(prefers-color-scheme:light){.fcx:not(.D){--bg:#eef1f8;--c1:rgba(255,255,255,.98);--c2:rgba(241,244,250,.96);--c3:rgba(232,236,245,.9);--bd:rgba(15,23,42,.08);--t1:#111827;--t2:#5b6477;--t3:#cbd2e0}}
+.fcx-bg{position:fixed;inset:0;z-index:-1;background:var(--bg);
+  background-image:radial-gradient(ellipse at 12% 36%,rgba(124,92,252,.12),transparent 55%),radial-gradient(ellipse at 88% 16%,rgba(34,211,238,.09),transparent 46%),radial-gradient(ellipse at 50% 98%,rgba(244,114,182,.06),transparent 42%);
+  background-size:180% 180%;animation:fcxBG 26s ease infinite}
+@media(prefers-color-scheme:light){body:not(.fcx-dark) .fcx-bg{background-image:radial-gradient(ellipse at 12% 36%,rgba(124,92,252,.06),transparent 55%),radial-gradient(ellipse at 88% 16%,rgba(34,211,238,.05),transparent 46%)}}
+@keyframes fcxBG{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+.fcx .hd{display:flex;align-items:center;gap:15px;background:var(--c1);border:1px solid var(--bd);border-radius:var(--r);padding:18px 22px;margin-bottom:16px;box-shadow:0 10px 30px rgba(0,0,0,.16)}
+.fcx .hd-logo{width:46px;height:46px;border-radius:13px;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;background:linear-gradient(135deg,#7c5cfc,#22d3ee);box-shadow:0 8px 18px rgba(124,92,252,.42)}
+.fcx .hd-logo svg{width:24px;height:24px}
+.fcx .hd-tx .hd-m{font-size:18px;font-weight:800;background:linear-gradient(135deg,#a78bfa,#22d3ee,#f472b6);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.fcx .hd-tx .hd-s{font-size:11.5px;color:var(--t2);margin-top:3px;letter-spacing:.4px}
+.fcx .card{background:var(--c1);border:1px solid var(--bd);border-radius:var(--r);padding:24px;margin-bottom:16px;position:relative;overflow:hidden;transition:border-color .5s,box-shadow .5s;box-shadow:0 10px 30px rgba(0,0,0,.16)}
+.fcx .card.cool{border-color:rgba(34,211,238,.2)}.fcx .card.warm{border-color:rgba(251,191,36,.2)}.fcx .card.hot{border-color:rgba(248,113,113,.22)}
+.fcx .card::before{content:'';position:absolute;inset:0;opacity:0;transition:opacity .8s;pointer-events:none}
+.fcx .card.cool::before{opacity:1;background:radial-gradient(circle at 70px 70px,rgba(34,211,238,.06),transparent 55%)}
+.fcx .card.warm::before{opacity:1;background:radial-gradient(circle at 70px 70px,rgba(251,191,36,.06),transparent 55%)}
+.fcx .card.hot::before{opacity:1;background:radial-gradient(circle at 70px 70px,rgba(248,113,113,.07),transparent 55%)}
+.fcx .wind{position:absolute;inset:0;overflow:hidden;pointer-events:none;opacity:0;transition:opacity .6s}
+.fcx .card.blow .wind{opacity:1}
+.fcx .wind i{position:absolute;font-style:normal;font-size:12px;color:rgba(34,211,238,.5);opacity:0;animation:fcxWind var(--wd,4s) linear infinite;animation-delay:var(--dd,0s);text-shadow:0 0 4px currentColor}
+.fcx .card.warm .wind i{color:rgba(251,191,36,.5)}.fcx .card.hot .wind i{color:rgba(248,113,113,.5)}
+@keyframes fcxWind{0%{transform:translateX(-12px);opacity:0}12%{opacity:.5}82%{opacity:.28}100%{transform:translateX(105%) translateY(-10px);opacity:0}}
+.fcx .streaks{position:absolute;inset:0;overflow:hidden;pointer-events:none;opacity:0;transition:opacity .6s}
+.fcx .card.blow .streaks{opacity:1}
+.fcx .streak{position:absolute;height:1px;border-radius:1px;background:linear-gradient(90deg,transparent,var(--cy),transparent);animation:fcxStreak var(--sd,3s) linear infinite;opacity:.38}
+.fcx .card.warm .streak{background:linear-gradient(90deg,transparent,var(--og),transparent)}
+.fcx .card.hot .streak{background:linear-gradient(90deg,transparent,var(--rd),transparent)}
+@keyframes fcxStreak{0%{transform:translateX(105%)}100%{transform:translateX(-220%)}}
+.fcx .wave{position:absolute;left:0;right:0;bottom:0;height:3px;opacity:0;background:linear-gradient(90deg,transparent,rgba(34,211,238,.6),transparent);animation:fcxWave 3s linear infinite;transition:opacity .5s}
+.fcx .card.blow .wave{opacity:.5}
+@keyframes fcxWave{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+.fcx .ftop{display:flex;align-items:center;gap:22px;position:relative;z-index:1}
+.fcx .fvis{position:relative;width:130px;height:130px;flex:none;display:flex;align-items:center;justify-content:center}
+.fcx .fvis canvas#fan{width:130px!important;height:130px!important;border:none!important;border-radius:50%;background:radial-gradient(circle at 50% 48%,rgba(34,211,238,.14),transparent 68%);margin:0!important;display:block}
+.fcx .fring{position:absolute;inset:-7px;pointer-events:none}
+.fcx .fring svg{width:144px;height:144px;transform:rotate(-90deg)}
+.fcx .fring .bg{fill:none;stroke:var(--t3);stroke-width:3;opacity:.25}
+.fcx .fring .fg{fill:none;stroke-width:3;stroke-linecap:round;stroke:var(--cy);transition:stroke-dashoffset .8s ease,stroke .5s}
+.fcx .fmeta{flex:1;min-width:0}
+.fcx .fmeta .ft{font-size:18px;font-weight:800;color:var(--t1)}
+.fcx .fmeta .fsub{font-size:12px;color:var(--t2);margin-top:4px;line-height:1.5}
+.fcx .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:20px;position:relative;z-index:1}
+.fcx .stat{background:var(--c2);border:1px solid var(--bd);border-radius:14px;padding:14px 12px;text-align:center}
+.fcx .stat .sl{font-size:11px;color:var(--t2);margin-top:5px;font-weight:600;letter-spacing:.5px}
+.fcx #speedDisplay,.fcx #temperatureDisplay{margin:0;font-size:18px;font-weight:800;line-height:1.2;color:var(--t1)}
+.fcx #temperatureDisplay{color:var(--cy)}
+.fcx .sec-t{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:var(--t2);letter-spacing:.6px;margin:22px 0 12px;position:relative;z-index:1;text-transform:uppercase}
+.fcx .sec-t svg{width:15px;height:15px;color:var(--cy)}
+.fcx .modes{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;position:relative;z-index:1}
+.fcx .button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;appearance:none;-webkit-appearance:none;width:100%;box-sizing:border-box;margin:0;padding:15px 8px;font-size:13px;font-weight:700;border-radius:14px;cursor:pointer;color:var(--t1)!important;background:var(--c2)!important;border:1px solid var(--bd);transition:transform .14s,border-color .2s,box-shadow .2s,background .2s}
+.fcx .button svg{width:22px;height:22px;color:var(--t2);transition:color .2s}
+.fcx .button:hover{transform:translateY(-2px);border-color:var(--cy);box-shadow:0 10px 22px rgba(34,211,238,.18)}
+.fcx .button:hover svg{color:var(--cy)}
+.fcx .button:active{transform:translateY(0)}
+.fcx .button.active{color:#fff!important;background:linear-gradient(135deg,#0891b2,#06b6d4)!important;border-color:transparent;box-shadow:0 10px 24px rgba(8,145,178,.4)}
+.fcx .button.active svg{color:#fff}
+.fcx .slider-container{display:none;align-items:center;gap:14px;margin-top:16px;padding:15px 18px;border-radius:14px;position:relative;z-index:1;background:linear-gradient(135deg,var(--c2),rgba(34,211,238,.05));border:1px solid rgba(34,211,238,.14)}
+.fcx .slider-container.active{display:flex}
+.fcx .slider-container .sll{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--cy);white-space:nowrap}
+.fcx .slider-container .sll svg{width:15px;height:15px}
+.fcx #speedSlider{flex:1;width:100%;-webkit-appearance:none;appearance:none;height:7px;border-radius:99px;outline:none;cursor:pointer;background:linear-gradient(90deg,rgba(34,211,238,.3),var(--rd))}
+.fcx #speedSlider::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#22d3ee,#0891b2);border:3px solid rgba(255,255,255,.3);box-shadow:0 0 12px rgba(34,211,238,.55);cursor:pointer}
+.fcx #speedSlider::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#22d3ee,#0891b2);border:3px solid rgba(255,255,255,.3);box-shadow:0 0 12px rgba(34,211,238,.55);cursor:pointer}
+.fcx #energyBar{width:100%;height:9px;margin-top:20px;border-radius:99px;overflow:hidden;background:var(--c2);border:1px solid var(--bd);position:relative;z-index:1}
+.fcx #energyFill{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--gn),var(--og),var(--rd));transition:width .6s ease}
+.fcx .switch-container{display:none;align-items:center;justify-content:center;gap:18px;margin-top:20px;padding-top:18px;border-top:1px dashed var(--bd);position:relative;z-index:1}
+.fcx .switch-container.active{display:flex}
+.fcx .switch-label{color:var(--t2);font-size:12.5px;font-weight:600}
+.fcx .switch{position:relative;width:54px;height:28px;flex:none;border-radius:30px;cursor:pointer;background:var(--t3);transition:background .3s}
+.fcx .switch:before{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:left .3s}
+.fcx .switch.active{background:linear-gradient(135deg,#0891b2,#22d3ee)}
+.fcx .switch.active:before{left:29px}
+.fcx #tempSourceHint{margin-top:12px;font-size:12.5px;color:var(--og);text-align:center;min-height:16px;position:relative;z-index:1}
+@media(min-width:768px){
+.fcx{max-width:920px;padding:28px 28px 64px}
+.fcx .card{padding:30px 34px}
+.fcx .ftop{gap:30px}
+.fcx .fvis,.fcx .fvis canvas#fan{width:160px;height:160px}.fcx .fvis canvas#fan{width:160px!important;height:160px!important}
+.fcx .fring{inset:-9px}.fcx .fring svg{width:178px;height:178px}
+.fcx .fmeta .ft{font-size:21px}.fcx .fmeta .fsub{font-size:13px}
+.fcx .stats{grid-template-columns:repeat(2,1fr);gap:16px}
+.fcx .stat{padding:18px 16px}
+.fcx #speedDisplay,.fcx #temperatureDisplay{font-size:22px}
+.fcx .modes{grid-template-columns:repeat(6,1fr);gap:12px}
+.fcx .button{padding:16px 8px;font-size:13.5px;border-radius:15px}
+.fcx .button svg{width:24px;height:24px}
+.fcx .hd-m{font-size:20px}
+}
+@media(max-width:560px){
+.fcx{padding:12px 12px 40px}
+.fcx .card{padding:18px}
+.fcx .ftop{gap:16px}
+.fcx .fvis,.fcx .fvis canvas#fan{width:104px;height:104px}.fcx .fvis canvas#fan{width:104px!important;height:104px!important}
+.fcx .fring{inset:-6px}.fcx .fring svg{width:116px;height:116px}
+.fcx .modes{grid-template-columns:repeat(3,1fr);gap:9px}
+.fcx .button{padding:12px 4px;font-size:12px}
+.fcx .button svg{width:20px;height:20px}
+.fcx .fmeta .ft{font-size:16px}
+}
+</style>
+</head>
+
+<body>
+<div class="fcx-bg"></div>
+<div class="fcx" id="fcx-root">
+  <div class="hd">
+    <div class="hd-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></div>
+    <div class="hd-tx">
+      <div class="hd-m">AirPi PWM 智能散热控制台</div>
+      <div class="hd-s">实时转速监控 · 温度联动 · 无极调速</div>
+    </div>
+  </div>
+
+  <div class="card cool blow" id="fanCard">
+    <div class="wind" id="fanWind"></div>
+    <div class="streaks" id="fanStreaks"></div>
+    <div class="wave"></div>
+
+    <div class="ftop">
+      <div class="fvis">
+        <canvas id="fan" width="200" height="200"></canvas>
+        <div class="fring"><svg viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="46"/><circle class="fg" id="fanRing" cx="50" cy="50" r="46" stroke-dasharray="289" stroke-dashoffset="289"/></svg></div>
+      </div>
+      <div class="fmeta">
+        <div class="ft">内置 PWM 散热风扇</div>
+        <div class="fsub">请勿密封风扇进出风口,以免影响散热</div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="sv"><div id="speedDisplay">当前转速：0</div></div><div class="sl">实时转速</div></div>
+      <div class="stat"><div class="sv"><div id="temperatureDisplay">当前温度：0</div></div><div class="sl">设备温度</div></div>
+    </div>
+
+    <div class="sec-t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg> 运行模式</div>
+    <div class="modes">
+      <button class="button" onclick="fanstop()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg><span>静音</span></button>
+      <button class="button" onclick="fanst1()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10z"/><path d="M2 21c0-3 1.85-5.36 5.08-6"/></svg><span>低速</span></button>
+      <button class="button" onclick="fanst2()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg><span>常规</span></button>
+      <button class="button" onclick="fanst3()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span>狂暴</span></button>
+      <button class="button" onclick="fanst4()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg><span>智能</span></button>
+      <button class="button" onclick="toggleSlider()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg><span>无极</span></button>
+    </div>
+
+    <div id="sliderContainer" class="slider-container">
+      <span class="sll"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg> 无极调速</span>
+      <input type="range" id="speedSlider" min="0" max="255" value="255" oninput="updateSpeed(this.value)">
+    </div>
+
+    <div id="energyBar"><div id="energyFill"></div></div>
+
+    <div id="switchContainer" class="switch-container">
+      <span class="switch-label">使用模组温度</span>
+      <div class="switch" id="temperatureSwitch" onclick="toggleSwitch()"></div>
+      <span class="switch-label">使用CPU温度</span>
+    </div>
+    <div id="tempSourceHint"></div>
+  </div>
+</div>
+
+<script type="text/javascript">
+        var useModemTemp = false;
+        var tms;
+        var fanv;
+        var currentSpeed = 0;
+        var currentTemperature = 0;
+        var wjtsvall = 255;
+        var timer;
+        var isSliderActive = false;
+
+        var API = {
+            fanstop: '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanstop")%>',
+            fanst1:  '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanst1")%>',
+            fanst2:  '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanst2")%>',
+            fanst3:  '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanst3")%>',
+            fanst4:  '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanst4")%>',
+            fanswj:  '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanswj")%>',
+            fanswj2: '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanswj2")%>',
+            fanst:   '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanst")%>',
+            fansttp: '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fansttp")%>',
+            fansvm:  '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fansvm")%>',
+            fansvc:  '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fansvc")%>'
+        };
+
+        const canvas = document.getElementById('fan');
+        const ctx = canvas.getContext('2d');
+        const energyFill = document.getElementById('energyFill');
+        const switchContainer = document.getElementById('switchContainer');
+        const temperatureSwitch = document.getElementById('temperatureSwitch');
+
+        function handleClick(event) {
+            const slider = event.target;
+            const rect = slider.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const percentage = clickX / rect.width;
+            const newValue = Math.round(percentage * (slider.max - slider.min));
+            slider.value = newValue;
+            updateSpeed(newValue);
+        }
+
+        function toggleSlider() {
+            XHR.get(API.fanswj2, { set: 'fanswj2', p: '1' }, function(x, rv) {
+                fanwjvl = parseInt(rv.result, 10);
+                const slider = document.getElementById('speedSlider');
+                slider.value = fanwjvl;
+                updateSpeed(fanwjvl);
+                fanswj(fanwjvl);
+            });
+            document.getElementById('sliderContainer').classList.add('active');
+            isSliderActive = true;
+            updateButtonStyles(999);
+            switchContainer.classList.remove('active');
+            var btn = document.querySelector('button[onclick="toggleSlider()"]');
+            btn.classList.add('active');
+            if (timer) { clearInterval(timer); timer = null; }
+        }
+
+        function resetSlider() {
+            document.getElementById('sliderContainer').classList.remove('active');
+            var btn = document.querySelector('button[onclick="toggleSlider()"]');
+            btn.classList.remove('active');
+            if (!timer) {
+                timer = setInterval(function() { fanst(); fansttp(); }, 8000);
+            }
+        }
+
+        function updateSpeed(value) {
+            wjtsvall = value;
+            updateFanAnimation(wjtsvall);
+            fanswj(wjtsvall);
+            var red = Math.min(255, Math.floor((value / 255) * 255));
+            var blue = 255 - red;
+            var color = 'rgb(' + red + ', 0, ' + blue + ')';
+            document.getElementById('speedSlider').style.background = 'linear-gradient(to right, ' + color + ', #ff0000)';
+            document.getElementById('speedDisplay').innerText = '当前转速：' + wjtsvall + '0-RPM';
+        }
+
+        function updateEnergyBar(temperature) {
+            currentTemperature = temperature;
+            var percentage = Math.min(Math.max(temperature / 100, 0), 1);
+            energyFill.style.width = percentage * 100 + '%';
+            var red = Math.min(255, Math.floor((temperature / 100) * 255));
+            var green = 255 - red;
+            energyFill.style.backgroundColor = 'rgb(' + red + ', ' + green + ', 0)';
+
+            var card = document.getElementById('fanCard');
+            card.classList.remove('cool','warm','hot');
+            if (temperature < 50) card.classList.add('cool');
+            else if (temperature < 75) card.classList.add('warm');
+            else card.classList.add('hot');
+
+            document.getElementById('temperatureDisplay').innerText = fanv + '：' + temperature + '\u00B0C';
+        }
+
+        function updateButtonStyles(speed) {
+            var buttons = document.querySelectorAll('.modes .button');
+            buttons.forEach(function(b) { b.classList.remove('active'); });
+            var speedMap = {64:'静音',128:'低速',192:'常规',255:'狂暴',0:'智能',999:'无极'};
+            var target = speedMap[speed] || '';
+            buttons.forEach(function(b) {
+                var span = b.querySelector('span');
+                if (span && span.innerText === target) b.classList.add('active');
+            });
+        }
+
+        function fanstop() { XHR.get(API.fanstop,{set:'fanstop',p:'1'},function(x,rv){updateFanAnimation(64);}); resetSlider(); updateButtonStyles(64); switchContainer.classList.remove('active'); fansttp(); }
+        function fanst1()  { XHR.get(API.fanst1,{set:'fanst1',p:'1'},function(x,rv){updateFanAnimation(128);}); resetSlider(); updateButtonStyles(128); switchContainer.classList.remove('active'); fansttp(); }
+        function fanst2()  { XHR.get(API.fanst2,{set:'fanst2',p:'1'},function(x,rv){updateFanAnimation(192);}); resetSlider(); updateButtonStyles(192); switchContainer.classList.remove('active'); fansttp(); }
+        function fanst3()  { XHR.get(API.fanst3,{set:'fanst3',p:'1'},function(x,rv){updateFanAnimation(255);}); resetSlider(); updateButtonStyles(255); switchContainer.classList.remove('active'); fansttp(); }
+        function fanst4()  { XHR.get(API.fanst4,{set:'fanst4',p:'1'},function(x,rv){}); updateButtonStyles(0); switchContainer.classList.add('active'); resetSlider(); }
+        function fanswj(v) { XHR.get(API.fanswj,{set:'fanswj',p:v},function(x,rv){}); }
+
+        function fanst() {
+            XHR.get(API.fanst, {set:'fanst',p:'1'}, function(x, rv) {
+                var pd = parseInt(rv.fanspd, 10);
+                var pd2 = rv.fancts;
+                if (pd2 === '智能') { updateButtonStyles(0); switchContainer.classList.add('active'); }
+                else if (pd2 === '无极') { updateButtonStyles(999); switchContainer.classList.remove('active'); toggleSlider(); }
+                else { updateButtonStyles(pd); switchContainer.classList.remove('active'); }
+                updateFanAnimation(pd);
+            });
+        }
+
+        function fansttp() {
+            XHR.get(API.fansttp, {set:'fansttp',p:'1'}, function(x, rv) {
+                var t = rv.fansttp;
+                fanv = rv.fansv;
+                var tempSourceHint = document.getElementById('tempSourceHint');
+                if (t && t !== 'null') {
+                    updateEnergyBar(parseFloat(t));
+                    if (useModemTemp) { tempSourceHint.innerText = '当前温度源: 模组温度'; }
+                    else { tempSourceHint.innerText = '当前温度源: ' + fanv; }
+                } else {
+                    document.getElementById('temperatureDisplay').innerText = fanv + '：--';
+                    tempSourceHint.innerText = '温度数据获取中...';
+                }
+            });
+        }
+
+        function toggleSwitch() {
+            useModemTemp = !useModemTemp;
+            var sw = document.getElementById('temperatureSwitch');
+            sw.classList.toggle('active', useModemTemp);
+            if (useModemTemp) { XHR.get(API.fansvm,{set:'fansvm',p:'1'},function(){}); }
+            else { XHR.get(API.fansvc,{set:'fansvc',p:'1'},function(){}); }
+            fansttp();
+        }
+
+        function updateFanAnimation(speed) { currentSpeed = speed; drawFan(); }
+
+        function drawFan() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            var cx = canvas.width / 2, cy = canvas.height / 2;
+            var bladeLength = 70, bladeWidth = 36, bladeArc = Math.PI / 4;
+            var colorValue = Math.floor((currentSpeed / 255) * 255);
+            var color = 'rgba(' + colorValue + ', 0, ' + (255 - colorValue) + ', 0.65)';
+            var minSpeed = 0.3, maxSpeed = 4.0;
+            var speedFactor = minSpeed + ((currentSpeed / 255) * (maxSpeed - minSpeed));
+            var angle = (performance.now() / 150) * speedFactor;
+
+            for (var i = 0; i < 5; i++) {
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(angle + (i * (2 * Math.PI / 5)));
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.quadraticCurveTo(bladeWidth * 0.3, -bladeLength * 0.40, bladeWidth, -bladeLength * 0.7);
+                ctx.arc(0, 0, bladeLength, -Math.PI / 2 + bladeArc / 2, -Math.PI / 2 - bladeArc / 2, true);
+                ctx.quadraticCurveTo(-bladeWidth * 0.3, -bladeLength * 0.40, 0, 0);
+                ctx.closePath();
+                ctx.fillStyle = color;
+                ctx.shadowColor = '#fff';
+                ctx.shadowBlur = 8;
+                ctx.fill();
+                ctx.restore();
+            }
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(cx, cy, 18, 0, 2 * Math.PI);
+            ctx.fillStyle = '#e0e0e0';
+            ctx.shadowBlur = 3; ctx.shadowColor = '#444';
+            ctx.fill();
+            ctx.restore();
+
+            var ring = document.getElementById('fanRing');
+            var dash = (currentSpeed / 255) * 289;
+            ring.setAttribute('stroke-dashoffset', 289 - dash);
+            if (currentSpeed < 100) ring.setAttribute('stroke', 'var(--cy)');
+            else if (currentSpeed < 200) ring.setAttribute('stroke', 'var(--og)');
+            else ring.setAttribute('stroke', 'var(--rd)');
+
+            document.getElementById('speedDisplay').innerText = '当前转速：' + currentSpeed + '0-RPM';
+            requestAnimationFrame(drawFan);
+        }
+
+        window.onload = function() {
+            fanst();
+            fansttp();
+        };
+        'use strict';
+</script>
+</body>
+<%+footer%>
