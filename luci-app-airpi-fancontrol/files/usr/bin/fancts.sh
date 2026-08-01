@@ -14,7 +14,6 @@ FANVALV_FILE="/etc/fanvallv.conf"
 SPEED_FILE="/usr/bin/fanspeed.conf"
 TEMP_SCRIPT="/usr/bin/get_sys_temp.sh"
 
-PWM_PATH="/sys/devices/platform/pwm-fan/hwmon/hwmon2/pwm1"
 DUTY_PATH="/sys/kernel/duty_cycle"
 
 # ---- Lockfile ----
@@ -30,11 +29,24 @@ fi
 echo $$ > "$LOCKFILE"
 trap "rm -f '$LOCKFILE'; exit" INT TERM EXIT
 
-# ---- Write PWM value to both interfaces ----
+# ---- Find the AP3000M hardware pwm-fan interface ----
+find_pwm_path() {
+    local pwm
+    for pwm in /sys/class/hwmon/hwmon*/pwm1; do
+        [ -w "$pwm" ] || continue
+        case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
+            pwmfan|pwm-fan) echo "$pwm"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# ---- Write PWM value to active interfaces ----
 write_pwm() {
-    local val="$1"
-    if [ -w "$PWM_PATH" ]; then
-        echo "$val" > "$PWM_PATH" 2>/dev/null
+    local val="$1" pwm
+    pwm=$(find_pwm_path)
+    if [ -n "$pwm" ]; then
+        echo "$val" > "$pwm" 2>/dev/null
     fi
     if [ -w "$DUTY_PATH" ]; then
         echo "$val" > "$DUTY_PATH" 2>/dev/null
@@ -69,16 +81,14 @@ while true; do
 
     if [ "$driver" != "pwm" ]; then
         if ! lsmod | grep -q -E "Airpi[_-]gpio[_-]fan"; then
-            rmmod Airpi-gpio-fan 2>/dev/null
-            rmmod Airpi_gpio_fan 2>/dev/null
+            rmmod airpi_gpio_fan 2>/dev/null
             gpio=$(uci get airpi-fan.settings.fan_gpio 2>/dev/null || echo "540")
             freq=$(uci get airpi-fan.settings.fan_freq 2>/dev/null || echo "15000")
             insmod /lib/modules/$(uname -r)/airpi-gpio-fan.ko \
                 fangpio=$gpio cycle=255 period=$freq fanen=1 2>/dev/null
         fi
     elif lsmod | grep -q -E "Airpi[_-]gpio[_-]fan"; then
-        rmmod Airpi-gpio-fan 2>/dev/null
-        rmmod Airpi_gpio_fan 2>/dev/null
+        rmmod airpi_gpio_fan 2>/dev/null
     fi
 
     temp=""

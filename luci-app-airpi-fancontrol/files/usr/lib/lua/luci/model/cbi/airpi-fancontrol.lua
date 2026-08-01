@@ -56,8 +56,7 @@ unload_btn.inputstyle = "remove"
 unload_btn:depends("fan_driver", "softpwm")
 
 function unload_btn.write(self, section, value)
-    os.execute("rmmod Airpi-gpio-fan 2>/dev/null")
-    os.execute("rmmod Airpi_gpio_fan 2>/dev/null")
+    os.execute("rmmod airpi_gpio_fan 2>/dev/null")
     luci.http.write([[
         <script>alert("已重新应用PWM模拟驱动,频率设定越大越容易啸叫，越小CPU占用越高！");history.back(-1);</script>
     ]])

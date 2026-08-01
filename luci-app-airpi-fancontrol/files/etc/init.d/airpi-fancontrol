@@ -19,11 +19,13 @@ load_softpwm_driver() {
     config_get gpio settings fan_gpio "540"
     config_get freq settings fan_freq "15000"
 
-    rmmod Airpi-gpio-fan 2>/dev/null
-    rmmod Airpi_gpio_fan 2>/dev/null
+    rmmod airpi_gpio_fan 2>/dev/null
 
-    insmod /lib/modules/$(uname -r)/airpi-gpio-fan.ko \
-        fangpio=$gpio cycle=255 period=$freq fanen=1
+    if ! insmod /lib/modules/$(uname -r)/airpi-gpio-fan.ko \
+        fangpio="$gpio" cycle=255 period="$freq" fanen=1; then
+        printMsg "failed to load soft-PWM driver"
+        return 1
+    fi
 
     printMsg "soft-PWM driver loaded (GPIO=$gpio, period=$freq us)"
 }
@@ -40,7 +42,7 @@ start_service() {
     config_get driver settings fan_driver "softpwm"
 
     if [ "$driver" != "pwm" ]; then
-        load_softpwm_driver
+        load_softpwm_driver || return 1
     else
         printMsg "Using hardware PWM driver (pwm-fan)"
     fi
@@ -63,9 +65,12 @@ stop_service() {
     done
 
     # Stop fan: set PWM to minimum
-    if [ -d /sys/devices/platform/pwm-fan/hwmon/hwmon2 ]; then
-        echo 64 > /sys/devices/platform/pwm-fan/hwmon/hwmon2/pwm1 2>/dev/null
-    fi
+    for pwm in /sys/class/hwmon/hwmon*/pwm1; do
+        [ -w "$pwm" ] || continue
+        case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
+            pwmfan|pwm-fan) echo 64 > "$pwm" 2>/dev/null; break ;;
+        esac
+    done
     if [ -w /sys/kernel/duty_cycle ]; then
         echo 0 > /sys/kernel/duty_cycle 2>/dev/null
     fi
