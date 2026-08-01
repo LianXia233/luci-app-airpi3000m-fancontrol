@@ -79,8 +79,8 @@ opkg install ./luci-app-airpi-fancontrol_*.ipk ./kmod-airpi-gpio-fan_*.ipk
 
 默认的「自动识别」模式会检测可写的 `pwm-fan` hwmon 接口：检测到则使用硬件 PWM，否则加载并使用软件 PWM。也可在 **状态 → 风扇设置** 中手动选择：
 
-- **使用 PWM 驱动**：适用于 8G eMMC 版本，由硬件 PWM 控制器输出
-- **使用软 PWM 模拟驱动**：适用于早期 16G eMMC 版本，由 GPIO 高频翻转模拟 PWM
+- **使用 PWM 驱动**：强制使用已检测到的硬件 PWM 控制器
+- **使用软 PWM 模拟驱动**：强制使用 GPIO 高频翻转模拟 PWM
 
 选择软 PWM 后可继续配置：
 
