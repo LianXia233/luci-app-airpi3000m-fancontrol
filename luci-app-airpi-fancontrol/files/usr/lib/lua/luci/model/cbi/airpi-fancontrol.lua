@@ -16,10 +16,11 @@ section:tab("fanst", translate("风扇设置"),
 
 -- ---- Fan driver selection ----
 fan_driver = section:taboption("fanst", ListValue, "fan_driver", translate("风扇驱动"),
-    translate("AIRPI-AP3000M风扇说明：早期EMMC-16G版本请选择模拟PWM驱动，8G-EMMC版本选硬件PWM驱动。"))
+    translate("自动模式会优先使用检测到的硬件 PWM，未检测到时回退到软件 PWM；也可手动指定。"))
+fan_driver:value("auto",    "自动识别（推荐）")
 fan_driver:value("pwm",     "使用PWM驱动")
 fan_driver:value("softpwm", "使用软PWM模拟驱动")
-fan_driver.default = "softpwm"
+fan_driver.default = "auto"
 
 -- ---- Soft-PWM kernel status indicator ----
 local fan_kernel_status = section:taboption("fanst", DummyValue, "_fan_kernel_status",

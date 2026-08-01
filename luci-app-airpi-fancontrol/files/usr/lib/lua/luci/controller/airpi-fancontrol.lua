@@ -31,16 +31,24 @@ local function find_pwm_path()
     return path
 end
 
+local function selected_driver()
+    local requested = uci:get("airpi-fan", "settings", "fan_driver") or "auto"
+    if requested == "auto" then
+        return find_pwm_path() and "pwm" or "softpwm"
+    end
+    return requested
+end
+
 -- =====================================================================
 --  Helper: write fan speed to active interfaces
 -- =====================================================================
 local function write_fan_speed(val)
     local v = tostring(val)
     local pwm_path = find_pwm_path()
-    if pwm_path and fs.access(pwm_path, "w") then
+    local driver = selected_driver()
+    if driver == "pwm" and pwm_path and fs.access(pwm_path, "w") then
         local f = io.open(pwm_path, "w"); if f then f:write(v); f:close() end
-    end
-    if fs.access(DUTY_PATH, "w") then
+    elseif driver == "softpwm" and fs.access(DUTY_PATH, "w") then
         local f = io.open(DUTY_PATH, "w"); if f then f:write(v); f:close() end
     end
     local f = io.open(SPEED_CONF, "w"); if f then f:write(v); f:close() end

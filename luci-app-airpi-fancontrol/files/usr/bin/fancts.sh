@@ -15,6 +15,7 @@ SPEED_FILE="/usr/bin/fanspeed.conf"
 TEMP_SCRIPT="/usr/bin/get_sys_temp.sh"
 
 DUTY_PATH="/sys/kernel/duty_cycle"
+ACTIVE_DRIVER=""
 
 # ---- Lockfile ----
 if [ -e "$LOCKFILE" ]; then
@@ -41,15 +42,41 @@ find_pwm_path() {
     return 1
 }
 
-# ---- Write PWM value to active interfaces ----
+# ---- Select hardware PWM when available, otherwise software PWM ----
+select_driver() {
+    local requested pwm
+    requested=$(uci get airpi-fan.settings.fan_driver 2>/dev/null || echo "auto")
+    pwm=$(find_pwm_path)
+
+    case "$requested" in
+        pwm) ACTIVE_DRIVER="pwm" ;;
+        softpwm) ACTIVE_DRIVER="softpwm" ;;
+        *) [ -n "$pwm" ] && ACTIVE_DRIVER="pwm" || ACTIVE_DRIVER="softpwm" ;;
+    esac
+}
+
+ensure_driver() {
+    local gpio freq module_path
+    if [ "$ACTIVE_DRIVER" = "pwm" ]; then
+        rmmod airpi_gpio_fan 2>/dev/null
+        return 0
+    fi
+
+    lsmod | grep -q '^airpi_gpio_fan[[:space:]]' && return 0
+    gpio=$(uci get airpi-fan.settings.fan_gpio 2>/dev/null || echo "540")
+    freq=$(uci get airpi-fan.settings.fan_freq 2>/dev/null || echo "15000")
+    module_path="/lib/modules/$(uname -r)/airpi-gpio-fan.ko"
+    insmod "$module_path" fangpio="$gpio" cycle=255 period="$freq" fanen=1 2>/dev/null
+}
+
+# ---- Write PWM value to the selected interface ----
 write_pwm() {
     local val="$1" pwm
-    pwm=$(find_pwm_path)
-    if [ -n "$pwm" ]; then
-        echo "$val" > "$pwm" 2>/dev/null
-    fi
-    if [ -w "$DUTY_PATH" ]; then
-        echo "$val" > "$DUTY_PATH" 2>/dev/null
+    if [ "$ACTIVE_DRIVER" = "pwm" ]; then
+        pwm=$(find_pwm_path)
+        [ -n "$pwm" ] && echo "$val" > "$pwm" 2>/dev/null
+    else
+        [ -w "$DUTY_PATH" ] && echo "$val" > "$DUTY_PATH" 2>/dev/null
     fi
     echo "$val" > "$SPEED_FILE" 2>/dev/null
 }
@@ -71,25 +98,13 @@ check_manual_mode() {
 
 # ---- Main ----
 echo disabled > /sys/class/thermal/thermal_zone0/mode 2>/dev/null
+select_driver
+ensure_driver
 check_manual_mode
 
 while true; do
-    driver="softpwm"
-    if [ -f "$CONFIG_FILE" ]; then
-        driver=$(uci get airpi-fan.settings.fan_driver 2>/dev/null || echo "softpwm")
-    fi
-
-    if [ "$driver" != "pwm" ]; then
-        if ! lsmod | grep -q '^airpi_gpio_fan[[:space:]]'; then
-            rmmod airpi_gpio_fan 2>/dev/null
-            gpio=$(uci get airpi-fan.settings.fan_gpio 2>/dev/null || echo "540")
-            freq=$(uci get airpi-fan.settings.fan_freq 2>/dev/null || echo "15000")
-            insmod "/lib/modules/$(uname -r)/airpi-gpio-fan.ko" \
-                fangpio="$gpio" cycle=255 period="$freq" fanen=1 2>/dev/null
-        fi
-    elif lsmod | grep -q '^airpi_gpio_fan[[:space:]]'; then
-        rmmod airpi_gpio_fan 2>/dev/null
-    fi
+    select_driver
+    ensure_driver
 
     temp=""
     if [ -r "$FANVALV_FILE" ] && grep -q "模组温度" "$FANVALV_FILE" 2>/dev/null; then
