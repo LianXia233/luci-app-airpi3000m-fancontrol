@@ -80,14 +80,14 @@ while true; do
     fi
 
     if [ "$driver" != "pwm" ]; then
-        if ! lsmod | grep -q -E "Airpi[_-]gpio[_-]fan"; then
+        if ! lsmod | grep -q '^airpi_gpio_fan[[:space:]]'; then
             rmmod airpi_gpio_fan 2>/dev/null
             gpio=$(uci get airpi-fan.settings.fan_gpio 2>/dev/null || echo "540")
             freq=$(uci get airpi-fan.settings.fan_freq 2>/dev/null || echo "15000")
-            insmod /lib/modules/$(uname -r)/airpi-gpio-fan.ko \
-                fangpio=$gpio cycle=255 period=$freq fanen=1 2>/dev/null
+            insmod "/lib/modules/$(uname -r)/airpi-gpio-fan.ko" \
+                fangpio="$gpio" cycle=255 period="$freq" fanen=1 2>/dev/null
         fi
-    elif lsmod | grep -q -E "Airpi[_-]gpio[_-]fan"; then
+    elif lsmod | grep -q '^airpi_gpio_fan[[:space:]]'; then
         rmmod airpi_gpio_fan 2>/dev/null
     fi
 

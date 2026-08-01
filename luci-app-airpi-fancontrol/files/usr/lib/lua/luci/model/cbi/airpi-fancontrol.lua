@@ -27,7 +27,7 @@ local fan_kernel_status = section:taboption("fanst", DummyValue, "_fan_kernel_st
 fan_kernel_status.rawhtml = true
 fan_kernel_status:depends("fan_driver", "softpwm")
 
-local handle_fan = io.popen("lsmod | grep -E 'Airpi[_-]gpio[_-]fan'")
+local handle_fan = io.popen("lsmod | grep -E '^airpi_gpio_fan[[:space:]]'")
 local fan_result = handle_fan:read("*a"); handle_fan:close()
 
 if fan_result ~= "" then
