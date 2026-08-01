@@ -28,9 +28,9 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 
 ## 功能特性
 
-- **双驱动支持**，可在网页端一键切换：
-  - **硬件 PWM**：走内核 `pwm-fan`（hwmon）接口，对应 8G eMMC 版本
-  - **软件 PWM**：走本项目的 `kmod-airpi-gpio-fan` GPIO 位翻转驱动，对应早期 16G eMMC 版本
+- **双驱动支持**，默认自动识别，也可在网页端手动切换：
+  - **硬件 PWM**：检测到内核 `pwm-fan`（hwmon）接口时优先使用
+  - **软件 PWM**：未检测到硬件接口时使用本项目的 `kmod-airpi-gpio-fan` GPIO 位翻转驱动
 - **四档手动调速**：静音 25% / 低速 50% / 常速 75% / 全速 100%
 - **无极调速**：滑块任意设定 0–255 占空比
 - **智能温控**：按温度曲线自动调速
@@ -77,10 +77,10 @@ opkg install ./luci-app-airpi-fancontrol_*.ipk ./kmod-airpi-gpio-fan_*.ipk
 
 ### 选择风扇驱动
 
-在 **状态 → 风扇设置** 中选择：
+默认的「自动识别」模式会检测可写的 `pwm-fan` hwmon 接口：检测到则使用硬件 PWM，否则加载并使用软件 PWM。也可在 **状态 → 风扇设置** 中手动选择：
 
-- **使用 PWM 驱动**：适用于 8G eMMC 版本，由硬件 PWM 控制器输出
-- **使用软 PWM 模拟驱动**：适用于早期 16G eMMC 版本，由 GPIO 高频翻转模拟 PWM
+- **使用 PWM 驱动**：强制使用已检测到的硬件 PWM 控制器
+- **使用软 PWM 模拟驱动**：强制使用 GPIO 高频翻转模拟 PWM
 
 选择软 PWM 后可继续配置：
 
@@ -131,7 +131,7 @@ opkg install ./luci-app-airpi-fancontrol_*.ipk ./kmod-airpi-gpio-fan_*.ipk
 
 ```
 config fan 'settings'
-	option fan_driver 'softpwm'   # softpwm | pwm
+	option fan_driver 'auto'      # auto | softpwm | pwm
 	option fan_gpio   '540'       # 软 PWM 使用的 GPIO 编号
 	option fan_freq   '15000'     # 软 PWM 周期，单位微秒
 	option fan_enable '1'         # 风扇总开关
@@ -240,7 +240,7 @@ ls /sys/kernel/duty_cycle          # sysfs 节点是否存在
 
 **风扇不转 / 一直全速**
 
-确认驱动类型选择正确：8G eMMC 版本选硬件 PWM，早期 16G eMMC 版本选软 PWM。选错会导致控制信号写到无效接口。
+先使用默认的「自动识别」模式。若手动指定驱动，确认硬件 PWM 模式存在 `pwm-fan` hwmon 接口，软件 PWM 模式则需要成功加载 `airpi-gpio-fan.ko`。
 
 ---
 

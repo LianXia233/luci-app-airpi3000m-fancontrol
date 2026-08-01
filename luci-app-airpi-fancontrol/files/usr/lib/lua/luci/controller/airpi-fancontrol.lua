@@ -12,21 +12,43 @@ local nixio = require "nixio"
 local fs    = require "nixio.fs"
 local uci   = require "luci.model.uci".cursor()
 
-local PWM_PATH   = "/sys/devices/platform/pwm-fan/hwmon/hwmon2/pwm1"
 local DUTY_PATH  = "/sys/kernel/duty_cycle"
 local SPEED_CONF = "/usr/bin/fanspeed.conf"
 local FANVAL     = "/etc/fanvall"
 local FANVALV    = "/etc/fanvallv.conf"
 
 -- =====================================================================
---  Helper: write fan speed to both PWM interfaces
+--  Helper: find the AP3000M hardware pwm-fan interface
+-- =====================================================================
+local function find_pwm_path()
+    local handle = io.popen("for p in /sys/class/hwmon/hwmon*/pwm1; do " ..
+        "[ -w \"$p\" ] || continue; " ..
+        "case \"$(cat \"${p%/*}/name\" 2>/dev/null)\" in " ..
+        "pwmfan|pwm-fan) echo \"$p\"; break;; esac; done")
+    if not handle then return nil end
+    local path = handle:read("*l")
+    handle:close()
+    return path
+end
+
+local function selected_driver()
+    local requested = uci:get("airpi-fan", "settings", "fan_driver") or "auto"
+    if requested == "auto" then
+        return find_pwm_path() and "pwm" or "softpwm"
+    end
+    return requested
+end
+
+-- =====================================================================
+--  Helper: write fan speed to active interfaces
 -- =====================================================================
 local function write_fan_speed(val)
     local v = tostring(val)
-    if fs.access(PWM_PATH, "w") then
-        local f = io.open(PWM_PATH, "w"); if f then f:write(v); f:close() end
-    end
-    if fs.access(DUTY_PATH, "w") then
+    local pwm_path = find_pwm_path()
+    local driver = selected_driver()
+    if driver == "pwm" and pwm_path and fs.access(pwm_path, "w") then
+        local f = io.open(pwm_path, "w"); if f then f:write(v); f:close() end
+    elseif driver == "softpwm" and fs.access(DUTY_PATH, "w") then
         local f = io.open(DUTY_PATH, "w"); if f then f:write(v); f:close() end
     end
     local f = io.open(SPEED_CONF, "w"); if f then f:write(v); f:close() end

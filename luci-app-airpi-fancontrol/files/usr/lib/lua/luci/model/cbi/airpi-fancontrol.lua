@@ -16,10 +16,11 @@ section:tab("fanst", translate("风扇设置"),
 
 -- ---- Fan driver selection ----
 fan_driver = section:taboption("fanst", ListValue, "fan_driver", translate("风扇驱动"),
-    translate("AIRPI-AP3000M风扇说明：早期EMMC-16G版本请选择模拟PWM驱动，8G-EMMC版本选硬件PWM驱动。"))
+    translate("自动模式会优先使用检测到的硬件 PWM，未检测到时回退到软件 PWM；也可手动指定。"))
+fan_driver:value("auto",    "自动识别（推荐）")
 fan_driver:value("pwm",     "使用PWM驱动")
 fan_driver:value("softpwm", "使用软PWM模拟驱动")
-fan_driver.default = "softpwm"
+fan_driver.default = "auto"
 
 -- ---- Soft-PWM kernel status indicator ----
 local fan_kernel_status = section:taboption("fanst", DummyValue, "_fan_kernel_status",
@@ -27,7 +28,7 @@ local fan_kernel_status = section:taboption("fanst", DummyValue, "_fan_kernel_st
 fan_kernel_status.rawhtml = true
 fan_kernel_status:depends("fan_driver", "softpwm")
 
-local handle_fan = io.popen("lsmod | grep -E 'Airpi[_-]gpio[_-]fan'")
+local handle_fan = io.popen("lsmod | grep -E '^airpi_gpio_fan[[:space:]]'")
 local fan_result = handle_fan:read("*a"); handle_fan:close()
 
 if fan_result ~= "" then
@@ -56,8 +57,7 @@ unload_btn.inputstyle = "remove"
 unload_btn:depends("fan_driver", "softpwm")
 
 function unload_btn.write(self, section, value)
-    os.execute("rmmod Airpi-gpio-fan 2>/dev/null")
-    os.execute("rmmod Airpi_gpio_fan 2>/dev/null")
+    os.execute("rmmod airpi_gpio_fan 2>/dev/null")
     luci.http.write([[
         <script>alert("已重新应用PWM模拟驱动,频率设定越大越容易啸叫，越小CPU占用越高！");history.back(-1);</script>
     ]])

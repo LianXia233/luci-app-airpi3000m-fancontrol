@@ -20,9 +20,8 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/airpi-gpio-fan
   SUBMENU:=Other modules
   TITLE:=AirPi GPIO soft-PWM fan driver
-  DEPENDS:=@(TARGET_mediatek_filogic||TARGET_mediatek_mt7622||TARGET_rockchip) +kmod-hwmon-core
+  DEPENDS:=@TARGET_mediatek_filogic
   FILES:=$(PKG_BUILD_DIR)/airpi-gpio-fan.ko
-  AUTOLOAD:=$(call AutoProbe,airpi-gpio-fan)
 endef
 
 define KernelPackage/airpi-gpio-fan/description
