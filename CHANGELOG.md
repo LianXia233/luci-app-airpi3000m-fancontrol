@@ -2,6 +2,17 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.2.0] - 2026-08-03
+
+### 修复
+
+- **init 脚本改为 procd 管理模式**：此前 `/usr/bin/fancts.sh &` 后台启动方式在父 shell 退出后守护进程会被杀死，导致风扇控制失效。现改为 `USE_PROCD=1`，由 procd 管理进程生命周期，崩溃自动重启，确保风扇持续受控
+- **LuCI 手动调速适配 procd**：手动 / 无极模式停止守护进程时改用 `/etc/init.d/airpi-fancontrol stop` 替代 `kill -9`；智能模式切换时改用 `/etc/init.d/airpi-fancontrol start` 替代直接后台启动，与 procd 管理保持一致
+
+### 变更
+
+- init 脚本新增 `service_triggers()` 与 `reload_service()`，支持 UCI 配置变更后自动重载
+
 ## [3.1.0] - 2026-07-31
 
 本次以「让项目能被正常编译和安装」为目标，修复了此前无法通过 OpenWrt SDK 构建的问题，并接入自动编译发布流程。
@@ -45,5 +56,6 @@
 - 统一温度采集脚本，支持 CPU、Wi-Fi 芯片、网络 PHY 三级回退
 - LuCI 界面提供静音 / 低速 / 常速 / 全速 / 无极 / 智能六种调速方式
 
+[3.2.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.2.0
 [3.1.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.1.0
 [3.0.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.0.0

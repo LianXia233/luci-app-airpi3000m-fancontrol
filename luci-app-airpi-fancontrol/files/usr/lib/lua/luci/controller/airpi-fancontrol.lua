@@ -55,15 +55,17 @@ local function write_fan_speed(val)
 end
 
 -- =====================================================================
---  Helper: kill fancts.sh daemon
+--  Helper: stop fancts.sh daemon (via procd init script)
 -- =====================================================================
-local function kill_fan_daemon()
-    local h = io.popen("pgrep -f fancts.sh")
-    local pid = h:read("*a"); h:close()
-    if pid and pid ~= "" then
-        pid = pid:match("%d+")
-        if pid then os.execute("kill -9 " .. pid) end
-    end
+local function stop_fan_daemon()
+    os.execute("/etc/init.d/airpi-fancontrol stop")
+end
+
+-- =====================================================================
+--  Helper: start fancts.sh daemon (via procd init script)
+-- =====================================================================
+local function start_fan_daemon()
+    os.execute("/etc/init.d/airpi-fancontrol start")
 end
 
 -- =====================================================================
@@ -116,7 +118,7 @@ end
 -- =====================================================================
 function action_fanstop()
     local rv = parse_request()
-    kill_fan_daemon()
+    stop_fan_daemon()
     os.execute("echo 0 > " .. FANVAL)
     write_fan_speed(64)
     rv.result = "fanstop"
@@ -128,7 +130,7 @@ end
 -- =====================================================================
 function action_fanst1()
     local rv = parse_request()
-    kill_fan_daemon()
+    stop_fan_daemon()
     os.execute("echo 1 > " .. FANVAL)
     write_fan_speed(128)
     rv.result = "fanst1"
@@ -140,7 +142,7 @@ end
 -- =====================================================================
 function action_fanst2()
     local rv = parse_request()
-    kill_fan_daemon()
+    stop_fan_daemon()
     os.execute("echo 2 > " .. FANVAL)
     write_fan_speed(192)
     rv.result = "fanst2"
@@ -152,7 +154,7 @@ end
 -- =====================================================================
 function action_fanst3()
     local rv = parse_request()
-    kill_fan_daemon()
+    stop_fan_daemon()
     os.execute("echo 3 > " .. FANVAL)
     write_fan_speed(255)
     rv.result = "fanst3"
@@ -164,9 +166,9 @@ end
 -- =====================================================================
 function action_fanst4()
     local rv = parse_request()
-    kill_fan_daemon()
+    stop_fan_daemon()
     os.execute("echo 9 > " .. FANVAL)
-    os.execute("/usr/bin/fancts.sh &")
+    start_fan_daemon()
     rv.result = "fanst4"
     json_reply(rv)
 end
@@ -176,7 +178,7 @@ end
 -- =====================================================================
 function action_fanswj()
     local rv = parse_request()
-    kill_fan_daemon()
+    stop_fan_daemon()
     os.execute("echo 999 > " .. FANVAL)
     write_fan_speed(rv.port)
     rv.result = "fanswj"
@@ -188,7 +190,7 @@ end
 -- =====================================================================
 function action_fanswj2()
     local rv = parse_request()
-    kill_fan_daemon()
+    stop_fan_daemon()
     os.execute("echo 999 > " .. FANVAL)
     local f = io.open(SPEED_CONF, "r")
     if f then

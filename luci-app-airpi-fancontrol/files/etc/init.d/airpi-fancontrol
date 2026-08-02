@@ -1,7 +1,8 @@
 #!/bin/sh /etc/rc.common
-# AirPi Fan Control unified init script
-# Part of luci-app-airpi-fancontrol v3.0.0
+# AirPi Fan Control unified init script (procd)
+# Part of luci-app-airpi-fancontrol v3.2.0
 
+USE_PROCD=1
 START=99
 STOP=10
 
@@ -68,25 +69,18 @@ start_service() {
         return 1
     fi
 
-    /usr/bin/fancts.sh &
-    printMsg "AirPi fan control service started"
+    procd_open_instance
+    procd_set_param command /usr/bin/fancts.sh
+    procd_set_param respawn 3600 1 5
+    procd_set_param pidfile "$PID_FILE"
+    procd_close_instance
+
+    printMsg "AirPi fan control service started (procd)"
 }
 
 stop_service() {
-    # Kill the fan control daemon
-    if [ -f "$PID_FILE" ]; then
-        local pid
-        pid=$(cat "$PID_FILE" 2>/dev/null)
-        [ -n "$pid" ] && kill "$pid" 2>/dev/null
-        rm -f "$PID_FILE"
-    fi
-
-    # Kill any remaining fancts.sh instances
-    for pid in $(pgrep -f fancts.sh 2>/dev/null); do
-        kill "$pid" 2>/dev/null
-    done
-
-    # Stop fan: set PWM to minimum
+    # Fan cleanup: set to minimum / off
+    local pwm
     for pwm in /sys/class/hwmon/hwmon*/pwm1; do
         [ -w "$pwm" ] || continue
         case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
@@ -100,8 +94,11 @@ stop_service() {
     printMsg "AirPi fan control service stopped"
 }
 
-restart() {
-    stop_service
-    sleep 1
-    start_service
+service_triggers() {
+    procd_add_reload_trigger "airpi-fan"
+}
+
+reload_service() {
+    stop
+    start
 }
