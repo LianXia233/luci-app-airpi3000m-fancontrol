@@ -7,6 +7,9 @@ Airpi AP3000M 专用的 OpenWrt 风扇控制插件，提供 LuCI 网页界面与
 
 > **本插件为 Airpi AP3000M 专用，不适用于其他机型。**
 > 其中的 GPIO 引脚编号、PWM sysfs 路径、温度传感器探测顺序均按该设备适配，装到别的路由器上不会工作。
+> <span style="color:#d00;"><strong>温馨提示：</strong>目前还没有进行实机测试，不保证功能可用。</span>
+> <span style="color:#d00;">如需使用，请先确认你的设备、内核版本和驱动环境与本项目匹配。</span>
+> <span style="color:#d00;">若遇到异常，请以实际日志和设备表现为准，谨慎安装与升级。</span>
 
 ---
 
