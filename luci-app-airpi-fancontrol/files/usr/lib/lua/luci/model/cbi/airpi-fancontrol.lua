@@ -101,34 +101,66 @@ local driver_status = section:taboption("fanst", DummyValue, "_driver_status",
     translate("当前驱动状态"))
 driver_status.rawhtml = true
 
-local status = {}
+-- =====================================================================
+--  Card-style status display: eMMC | HW PWM | SW PWM
+-- =====================================================================
+local function _card(title, accent_color, bg_color, icon, status_text, detail)
+    return string.format([[
+<td style="width:33%%;padding:10px 12px;border-radius:6px;background:%s;border-left:3px solid %s;vertical-align:top">
+  <div style="font-size:11px;color:#888;margin-bottom:3px">%s</div>
+  <div style="font-size:13px;font-weight:600;color:#333">%s %s</div>
+  <div style="font-size:11px;color:%s;margin-top:3px">%s</div>
+</td>]], bg_color, accent_color, title, icon, status_text, accent_color, detail)
+end
+
+local emmc_gb = emmc_info:match("^(%d+GB)") or "?"
+local emmc_is_16g = emmc_info:match("16GB") ~= nil
+local emmc_color = emmc_is_16g and "#0891b2" or "#8b5cf6"
+local emmc_bg    = emmc_is_16g and "#ecfeff" or "#f5f3ff"
+local emmc_card = _card("eMMC 闪存", emmc_color, emmc_bg,
+    emmc_gb, "版本",
+    emmc_is_16g and "仅支持软件PWM" or "仅支持硬件PWM")
+
+local hw_color, hw_bg, hw_icon, hw_label, hw_detail
 if hw_detect then
-    status[#status + 1] = string.format(
-        '<span style="color:green;font-weight:bold">✔ 硬件PWM可用</span> (%s)', hw_detect)
+    hw_color = "#16a34a"; hw_bg = "#f0fdf4"
+    hw_icon = "&#10003;"; hw_label = "可用"
+    hw_detail = hw_detect
 else
-    status[#status + 1] = '<span style="color:orange">⚠ 未检测到硬件PWM (hwmon pwm-fan)</span>'
+    hw_color = "#dc2626"; hw_bg = "#fef2f2"
+    hw_icon = "&#10007;"; hw_label = "不可用"
+    hw_detail = emmc_is_16g and "16GB版本仅支持软件PWM" or "未检测到PWM控制器"
 end
+local hw_card = _card("硬件 PWM", hw_color, hw_bg, hw_icon, hw_label, hw_detail)
 
+local sw_color, sw_bg, sw_icon, sw_label, sw_detail
 if soft_loaded then
-    status[#status + 1] = '<span style="color:green;font-weight:bold">✔ 软PWM内核已加载</span>'
+    sw_color = "#16a34a"; sw_bg = "#f0fdf4"
+    sw_icon = "&#10003;"; sw_label = "已加载"
+    sw_detail = "airpi_gpio_fan"
+    if duty_val then sw_detail = sw_detail .. " | duty=" .. duty_val end
 else
-    status[#status + 1] = '<span style="color:red">✖ 软PWM内核未加载</span>'
+    sw_color = "#ea580c"; sw_bg = "#fff7ed"
+    sw_icon = "&#9888;"; sw_label = "未加载"
+    sw_detail = "点击下方按钮加载模块"
 end
+local sw_card = _card("软件 PWM", sw_color, sw_bg, sw_icon, sw_label, sw_detail)
 
-if duty_val then
-    status[#status + 1] = string.format('duty_cycle = <b>%s</b>', duty_val)
-end
-
-status[#status + 1] = string.format('<span style="color:#0099CC">%s</span>', emmc_info)
-
-driver_status.value = table.concat(status, " &nbsp;|&nbsp; ")
+driver_status.value = string.format([[
+<div style="display:table;width:100%%;border-spacing:6px">
+<div style="display:table-row">
+%s
+%s
+%s
+</div>
+</div>]], emmc_card, hw_card, sw_card)
 
 -- =====================================================================
 --  Fan driver selector
 -- =====================================================================
 fan_driver = section:taboption("fanst", ListValue, "fan_driver",
     translate("风扇驱动模式"),
-    translate([[自动模式：优先检测硬件PWM (hwmon pwm-fan)，未检测到时回退到软件PWM。
+    translate([[自动模式：根据eMMC闪存容量自动选择驱动（16GB→软件PWM，8GB→硬件PWM），无法检测时回退路径探测。
 硬件PWM：使用内核pwm-fan驱动，通过 /sys/class/hwmon/ 接口控制。
 软件PWM：加载 airpi_gpio_fan.ko 内核模块，通过 /sys/kernel/duty_cycle 控制。]]))
 fan_driver:value("auto",    "自动识别（推荐）")
