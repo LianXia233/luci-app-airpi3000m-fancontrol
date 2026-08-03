@@ -27,6 +27,15 @@ section:tab("fanst", translate("驱动设置"))
 --  Pre-detect hardware for status display
 -- =====================================================================
 local function detect_hw_pwm()
+    -- 16GB eMMC设备不支持硬件PWM，即使sysfs中存在pwmchip节点
+    local f = io.open("/sys/block/mmcblk0/size", "r")
+    if f then
+        local sectors = tonumber(f:read("*a"))
+        f:close()
+        if sectors and sectors > 25000000 then
+            return nil
+        end
+    end
     -- Method 1: hwmon pwm-fan
     local h = io.popen(
         "for p in /sys/class/hwmon/hwmon*/pwm1; do " ..
