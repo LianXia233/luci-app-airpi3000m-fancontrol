@@ -2,6 +2,25 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.5.0] - 2026-08-04
+
+### 修复
+
+- **开机自启**：init 脚本与 fancts.sh 的 `insmod` 改用模块名（不含路径），兼容不同内核版本的 ko 安装位置
+- **智能模式失效**：移除 `echo disabled > thermal_zone0/mode`，此前该语句禁用温控子系统导致温度读数停滞
+- **风扇延迟启动**：加载软PWM驱动后立即写入初始占空比 64
+
+### 新增
+
+- **多温度源**：fancts.sh 同时读取 CPU / WiFi / PHY / 4G模组四路温度，取最大值调速；状态页展示多路温度卡片
+- **`get_sys_temp.sh -a`**：输出所有可用温度源
+- **init / fancts.sh eMMC 检测**：启动和运行时同步加入 eMMC 容量守卫
+
+### 变更
+
+- 不再依赖 FANVALV 配置文件选择温度源，统一使用多源取最大值策略
+- Controller 新增 `/admin/airpi-fan/fansttpa` 端点
+
 ## [3.4.2] - 2026-08-03
 
 ### 变更

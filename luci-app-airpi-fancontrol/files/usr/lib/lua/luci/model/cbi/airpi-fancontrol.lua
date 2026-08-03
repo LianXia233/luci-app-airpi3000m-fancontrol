@@ -1,5 +1,5 @@
 --[[
-LuCI airpi-fancontrol - CBI Model (v3.3.0)
+LuCI airpi-fancontrol - CBI Model (v3.5.0)
 Part of luci-app-airpi-fancontrol
 Fan driver selection: hardware PWM / software PWM, with per-mode config.
 --]]

@@ -1,5 +1,5 @@
 --[[
-LuCI airpi-fancontrol - Controller (v3.3.0)
+LuCI airpi-fancontrol - Controller (v3.5.0)
 Part of luci-app-airpi-fancontrol
 Provides REST API endpoints for fan speed control and status polling.
 Supports hardware PWM (hwmon pwm-fan / sysfs pwmchip) and software PWM
@@ -142,6 +142,7 @@ function index()
 
     entry({"admin", "airpi-fan", "fansttp"}, call("action_fansttp"))
     entry({"admin", "airpi-fan", "fanst"},   call("action_fanst"))
+    entry({"admin", "airpi-fan", "fansttpa"}, call("action_fansttpa"))
     entry({"admin", "airpi-fan", "fansvm"},  call("action_fansvm"))
     entry({"admin", "airpi-fan", "fansvc"},  call("action_fansvc"))
     entry({"admin", "airpi-fan", "fanswj"},  call("action_fanswj"))
@@ -315,6 +316,28 @@ function action_fansttp()
 
     rv.at = rv.set; rv.port = rv.port
     rv.fansttp = temperature; rv.fansv = fansv
+    json_reply(rv)
+end
+
+-- =====================================================================
+--  fansttpa: query all temperature sources at once
+-- =====================================================================
+function action_fansttpa()
+    local rv = parse_request()
+    local temps = {}
+
+    local h = io.popen("/usr/bin/get_sys_temp.sh -a 2>/dev/null")
+    if h then
+        for line in h:lines() do
+            local k, v = line:match("^(%w+)=(%-?%d+)$")
+            if k and v then
+                temps[k] = v
+            end
+        end
+        h:close()
+    end
+
+    rv.temps = temps
     json_reply(rv)
 end
 

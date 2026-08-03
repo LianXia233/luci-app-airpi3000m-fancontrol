@@ -1,11 +1,11 @@
 #!/bin/sh
-# fancts.sh - AirPi Fan Control Daemon v3.0.0
+# fancts.sh - AirPi Fan Control Daemon v3.5.0
 # Part of luci-app-airpi-fancontrol
 #
-# Reads temperature from /usr/bin/get_sys_temp.sh and adjusts fan PWM
-# according to a stepped temperature curve. Supports both soft-PWM
-# (airpi-gpio-fan.ko via /sys/kernel/duty_cycle) and hard-PWM
-# (pwm-fan.ko via /sys/class/hwmon/hwmon*/pwm1).
+# Reads temperature from get_sys_temp.sh and adjusts fan PWM according
+# to a stepped temperature curve. Uses the hottest available sensor to
+# prevent thermal throttling. Supports both soft-PWM (airpi-gpio-fan.ko
+# via /sys/kernel/duty_cycle) and hard-PWM (pwm-fan.ko via hwmon).
 
 LOCKFILE="/var/run/airpi-fancontrol.pid"
 CONFIG_FILE="/etc/config/airpi-fan"
@@ -15,6 +15,8 @@ SPEED_FILE="/usr/bin/fanspeed.conf"
 TEMP_SCRIPT="/usr/bin/get_sys_temp.sh"
 
 DUTY_PATH="/sys/kernel/duty_cycle"
+EMMC_SIZE_FILE="/sys/block/mmcblk0/size"
+EMMC_THRESHOLD=25000000
 ACTIVE_DRIVER=""
 
 # ---- Lockfile ----
@@ -30,6 +32,16 @@ fi
 echo $$ > "$LOCKFILE"
 trap "rm -f '$LOCKFILE'; exit" INT TERM EXIT
 
+# ---- eMMC容量检测 ----
+detect_emmc_size() {
+    [ -r "$EMMC_SIZE_FILE" ] || return 1
+    local sectors
+    sectors=$(cat "$EMMC_SIZE_FILE" 2>/dev/null)
+    case "$sectors" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$sectors" -gt 0 ] 2>/dev/null && echo "$sectors" && return 0
+    return 1
+}
+
 # ---- Find the AP3000M hardware pwm-fan interface ----
 find_pwm_path() {
     local pwm
@@ -42,21 +54,29 @@ find_pwm_path() {
     return 1
 }
 
-# ---- Select hardware PWM when available, otherwise software PWM ----
+# ---- Select driver: 优先eMMC容量判断，回退路径探测 ----
 select_driver() {
-    local requested pwm
+    local requested pwm emmc
     requested=$(uci get airpi-fan.settings.fan_driver 2>/dev/null || echo "auto")
-    pwm=$(find_pwm_path)
 
-    case "$requested" in
-        pwm) ACTIVE_DRIVER="pwm" ;;
-        softpwm) ACTIVE_DRIVER="softpwm" ;;
-        *) [ -n "$pwm" ] && ACTIVE_DRIVER="pwm" || ACTIVE_DRIVER="softpwm" ;;
-    esac
+    if [ "$requested" = "auto" ]; then
+        emmc=$(detect_emmc_size)
+        if [ -n "$emmc" ]; then
+            if [ "$emmc" -gt "$EMMC_THRESHOLD" ]; then
+                ACTIVE_DRIVER="softpwm"; return
+            else
+                ACTIVE_DRIVER="pwm"; return
+            fi
+        fi
+        pwm=$(find_pwm_path)
+        [ -n "$pwm" ] && ACTIVE_DRIVER="pwm" || ACTIVE_DRIVER="softpwm"
+    else
+        ACTIVE_DRIVER="$requested"
+    fi
 }
 
 ensure_driver() {
-    local gpio freq module_path
+    local gpio freq
     if [ "$ACTIVE_DRIVER" = "pwm" ]; then
         rmmod airpi_gpio_fan 2>/dev/null
         return 0
@@ -65,8 +85,9 @@ ensure_driver() {
     lsmod | grep -q '^airpi_gpio_fan[[:space:]]' && return 0
     gpio=$(uci get airpi-fan.settings.fan_gpio 2>/dev/null || echo "540")
     freq=$(uci get airpi-fan.settings.fan_freq 2>/dev/null || echo "15000")
-    module_path="/lib/modules/$(uname -r)/airpi-gpio-fan.ko"
-    insmod "$module_path" fangpio="$gpio" cycle=255 period="$freq" fanen=1 2>/dev/null
+    # 用模块名而非完整路径，兼容不同内核版本的安装路径
+    insmod airpi-gpio-fan fangpio="$gpio" cycle=255 period="$freq" fanen=1 2>/dev/null \
+        || modprobe airpi_gpio_fan fangpio="$gpio" cycle=255 period="$freq" fanen=1 2>/dev/null
 }
 
 # ---- Write PWM value to the selected interface ----
@@ -97,7 +118,7 @@ check_manual_mode() {
 }
 
 # ---- Main ----
-echo disabled > /sys/class/thermal/thermal_zone0/mode 2>/dev/null
+# 不再禁用thermal zone，让温度传感器持续更新
 select_driver
 ensure_driver
 check_manual_mode
@@ -106,32 +127,44 @@ while true; do
     select_driver
     ensure_driver
 
-    temp=""
-    if [ -r "$FANVALV_FILE" ] && grep -q "模组温度" "$FANVALV_FILE" 2>/dev/null; then
-        if lsusb 2>/dev/null | grep -q 5700; then
-            temp=$(sendat 1 'AT^CHIPTEMP?' 2>/dev/null | grep 'CHIPTEMP' | sed -n '1p' | cut -d, -f9 | sed '/^$/d')
-            [ -n "$temp" ] && temp=$((temp * 100))
-        fi
+    # 收集全部可用温度源，取最大值（毫摄氏度）
+    temp_max=0
+
+    # 温度源1：CPU thermal zone
+    if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
+        t=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+        case "$t" in ''|*[!0-9]*) ;; *) [ "$t" -gt "$temp_max" ] && temp_max=$t ;; esac
     fi
 
-    if [ -z "$temp" ] || ! echo "$temp" | grep -qE '^[0-9]+$'; then
-        if [ -x "$TEMP_SCRIPT" ]; then
-            temp=$("$TEMP_SCRIPT" 2>/dev/null)
-        else
-            temp=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
-        fi
+    # 温度源2：WiFi芯片（iwpriv）
+    for dev in ra0 rax0 rai0; do
+        [ -d "/sys/class/net/$dev" ] || continue
+        tw=$(iwpriv "$dev" stat 2>/dev/null | grep -i CurrentTemperature | head -1 | grep -oE '[0-9]+' | head -1)
+        [ -n "$tw" ] && tw=$((tw * 1000)) && [ "$tw" -gt "$temp_max" ] && temp_max=$tw
+        break
+    done
+
+    # 温度源3：PHY hwmon
+    if [ -r /sys/class/hwmon/hwmon1/temp1_input ]; then
+        tp=$(cat /sys/class/hwmon/hwmon1/temp1_input 2>/dev/null)
+        case "$tp" in ''|*[!0-9]*) ;; *) [ "$tp" -gt "$temp_max" ] && temp_max=$tp ;; esac
     fi
 
-    case "$temp" in ''|*[!0-9-]*) temp=0 ;; esac
+    # 温度源4：4G模组（sendat CHIPTEMP）
+    if lsusb 2>/dev/null | grep -q 5700; then
+        tm=$(sendat 1 'AT^CHIPTEMP?' 2>/dev/null | grep 'CHIPTEMP' | sed -n '1p' | cut -d, -f9 | sed '/^$/d')
+        case "$tm" in ''|*[!0-9]*) ;; *) tm=$((tm * 100)); [ "$tm" -gt "$temp_max" ] && temp_max=$tm ;; esac
+    fi
 
-    if [ "$temp" -gt 85000 ]; then
-        write_pwm 255
-    elif [ "$temp" -gt 60000 ] && [ "$temp" -le 85000 ]; then
-        write_pwm 192
-    elif [ "$temp" -gt 50000 ] && [ "$temp" -le 60000 ]; then
-        write_pwm 128
-    elif [ "$temp" -gt 0 ] && [ "$temp" -le 50000 ]; then
+    # 默认：如果所有源都读不到，设安全值64（最低转速）
+    if [ "$temp_max" -le 0 ]; then
         write_pwm 64
+    elif [ "$temp_max" -gt 85000 ]; then
+        write_pwm 255
+    elif [ "$temp_max" -gt 60000 ]; then
+        write_pwm 192
+    elif [ "$temp_max" -gt 50000 ]; then
+        write_pwm 128
     else
         write_pwm 64
     fi

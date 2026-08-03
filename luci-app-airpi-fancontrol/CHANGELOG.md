@@ -2,6 +2,27 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.5.0] - 2026-08-04
+
+### 修复
+
+- **开机自启**：init 脚本与 fancts.sh 的 `insmod` 改用模块名（不含路径），兼容不同内核版本的 ko 安装位置；此前使用完整路径 `/lib/modules/$(uname -r)/airpi-gpio-fan.ko` 在某些设备上路径不存在导致静默加载失败
+- **智能模式失效**：移除 fancts.sh 中的 `echo disabled > thermal_zone0/mode`，该语句禁用了温控子系统导致温度读数停滞，风扇永远卡在初始档位
+- **风扇延迟启动**：加载软PWM驱动后立即写入初始占空比 64，不再等待 fancts.sh 首轮轮询（最多 8 秒延迟）
+
+### 新增
+
+- **多温度源采集**：fancts.sh 每轮同时读取 CPU / WiFi / PHY / 4G模组四路温度，取最大值调速，防止热点组件未被覆盖
+- **多温度源展示**：状态页新增温度卡片网格，同时显示 CPU / WiFi / PHY / 4G模组 各组件实时温度
+- **`get_sys_temp.sh -a`**：新增 `-a` 选项，输出所有可用温度源（key=value 格式，方便脚本消费）
+- **init 脚本 eMMC 检测**：启动时根据 eMMC 扇区数自动判断 16GB（软件PWM）或 8GB（硬件PWM）
+- **fancts.sh eMMC 检测**：运行时驱动选择同步加入 eMMC 容量守卫
+
+### 变更
+
+- fancts.sh 不再读取 FANVALV 配置文件判断温度源选择，统一使用多源取最大值策略
+- Controller 新增 `/admin/airpi-fan/fansttpa` API 端点
+
 ## [3.4.2] - 2026-08-03
 
 ### 变更

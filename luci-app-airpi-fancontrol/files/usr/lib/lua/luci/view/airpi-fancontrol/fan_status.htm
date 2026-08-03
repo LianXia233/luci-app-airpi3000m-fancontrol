@@ -84,6 +84,12 @@
 .fcx .switch.active{background:linear-gradient(135deg,#0891b2,#22d3ee)}
 .fcx .switch.active:before{left:29px}
 .fcx #tempSourceHint{margin-top:12px;font-size:12.5px;color:var(--og);text-align:center;min-height:16px;position:relative;z-index:1}
+.fcx .temp-grid{display:none;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:12px;position:relative;z-index:1}
+.fcx .temp-grid.active{display:grid}
+.fcx .temp-chip{background:var(--c2);border:1px solid var(--bd);border-radius:10px;padding:8px 10px;text-align:center}
+.fcx .temp-chip .tc-label{font-size:10px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px}
+.fcx .temp-chip .tc-val{font-size:15px;font-weight:700;color:var(--t1);margin-top:2px}
+.fcx .temp-chip .tc-unit{font-size:10px;color:var(--t2)}
 @media(min-width:768px){
 .fcx{max-width:920px;padding:28px 28px 64px}
 .fcx .card{padding:30px 34px}
@@ -162,6 +168,8 @@
 
     <div id="energyBar"><div id="energyFill"></div></div>
 
+    <div id="tempGrid" class="temp-grid"></div>
+
     <div id="switchContainer" class="switch-container">
       <span class="switch-label">使用模组温度</span>
       <div class="switch" id="temperatureSwitch" onclick="toggleSwitch()"></div>
@@ -191,6 +199,7 @@
             fanswj2: '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanswj2")%>',
             fanst:   '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fanst")%>',
             fansttp: '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fansttp")%>',
+            fansttpa:'<%=luci.dispatcher.build_url("admin", "airpi-fan", "fansttpa")%>',
             fansvm:  '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fansvm")%>',
             fansvc:  '<%=luci.dispatcher.build_url("admin", "airpi-fan", "fansvc")%>'
         };
@@ -306,6 +315,32 @@
                 } else {
                     document.getElementById('temperatureDisplay').innerText = fanv + '：--';
                     tempSourceHint.innerText = '温度数据获取中...';
+                }
+            });
+            fansttpa();
+        }
+
+        function fansttpa() {
+            XHR.get(API.fansttpa, {set:'fansttpa',p:'1'}, function(x, rv) {
+                var temps = rv.temps || {};
+                var grid = document.getElementById('tempGrid');
+                var labels = {cpu:'CPU',wifi:'WiFi',phy:'PHY',modem:'4G模块'};
+                var html = '';
+                for (var k in labels) {
+                    if (temps[k] !== undefined) {
+                        var style = '';
+                        var tv = parseInt(temps[k]);
+                        if (tv > 75) style = 'color:#f87171;';
+                        else if (tv > 55) style = 'color:#fbbf24;';
+                        else style = 'color:#34d399;';
+                        html += '<div class="temp-chip"><div class="tc-label">'+labels[k]+'</div><div class="tc-val" style="'+style+'">'+tv+'<span class="tc-unit">°C</span></div></div>';
+                    }
+                }
+                if (html) {
+                    grid.innerHTML = html;
+                    grid.classList.add('active');
+                } else {
+                    grid.classList.remove('active');
                 }
             });
         }
