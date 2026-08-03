@@ -63,9 +63,27 @@ local function read_duty_cycle()
     return v and v:gsub("%s+$", "") or nil
 end
 
+-- 检测eMMC容量：返回人类可读的容量描述字符串
+local function detect_emmc()
+    local f = io.open("/sys/block/mmcblk0/size", "r")
+    if not f then return "（无法检测）" end
+    local sectors = tonumber(f:read("*a"))
+    f:close()
+    if sectors and sectors > 25000000 then
+        local gb = math.floor(sectors * 512 / 1000000000 + 0.5)
+        return string.format("%dGB闪存 → 仅支持软件PWM", gb)
+    elseif sectors then
+        local gb = math.floor(sectors * 512 / 1000000000 + 0.5)
+        return string.format("%dGB闪存 → 仅支持硬件PWM", gb)
+    else
+        return "（无法检测）"
+    end
+end
+
 local hw_detect   = detect_hw_pwm()
 local soft_loaded = has_gpio_fan_loaded()
 local duty_val    = read_duty_cycle()
+local emmc_info   = detect_emmc()
 
 -- =====================================================================
 --  Driver status banner (always visible)
@@ -91,6 +109,8 @@ end
 if duty_val then
     status[#status + 1] = string.format('duty_cycle = <b>%s</b>', duty_val)
 end
+
+status[#status + 1] = string.format('<span style="color:#0099CC">%s</span>', emmc_info)
 
 driver_status.value = table.concat(status, " &nbsp;|&nbsp; ")
 

@@ -47,9 +47,28 @@ local function find_pwm_path()
     return nil
 end
 
+-- 检测eMMC容量：返回扇区数（512字节/扇区），无法读取返回nil
+-- 8GB版本约15,269,888扇区，16GB版本约31,116,288扇区
+local function detect_emmc_size()
+    local f = io.open("/sys/block/mmcblk0/size", "r")
+    if not f then return nil end
+    local size = f:read("*a")
+    f:close()
+    return tonumber(size)
+end
+
 local function selected_driver()
     local requested = uci:get("airpi-fan", "settings", "fan_driver") or "auto"
     if requested == "auto" then
+        local emmc = detect_emmc_size()
+        if emmc and emmc > 25000000 then
+            -- 16GB闪存版本：仅支持软件PWM
+            return "softpwm"
+        elseif emmc and emmc <= 25000000 then
+            -- 8GB闪存版本：仅支持硬件PWM
+            return "pwm"
+        end
+        -- 无法读取eMMC容量时回退到路径探测
         return find_pwm_path() and "pwm" or "softpwm"
     end
     return requested
