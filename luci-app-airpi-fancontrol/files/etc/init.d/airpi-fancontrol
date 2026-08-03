@@ -94,9 +94,8 @@ start_service() {
     fi
 
     procd_open_instance
-    procd_set_param command /usr/bin/fancts.sh
+    procd_set_param command /usr/bin/fancts.sh smart
     procd_set_param respawn 3600 1 5
-    procd_set_param pidfile "$PID_FILE"
     procd_close_instance
 
     printMsg "AirPi fan control service started (procd)"
