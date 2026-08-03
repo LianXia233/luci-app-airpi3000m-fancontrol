@@ -2,6 +2,55 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.4.2] - 2026-08-03
+
+### 变更
+
+- **UI 优化**：状态横幅从扁平单行字符串改为三列卡片布局（eMMC 闪存 / 硬件 PWM / 软件 PWM）
+  - 每张卡片独立配色：蓝色系（eMMC）、绿色/红色（硬件PWM）、绿色/橙色（软件PWM）
+  - 圆角 + 左侧彩色边框，分类标题 + 状态 + 详情三行结构，动态变色
+- 更新 `fan_driver` 字段描述，提及 eMMC 容量自动检测逻辑
+
+## [3.4.1] - 2026-08-03
+
+### 修复
+
+- **16GB 设备 `detect_hw_pwm()` 仍显示硬件 PWM 可用**：CBI 模型中的 `detect_hw_pwm()` 此前仅做纯路径探测，在 16GB eMMC 设备上即使 `selected_driver()` 已正确选择软件 PWM，状态横幅仍显示「硬件PWM可用」。现新增 eMMC 容量守卫：>25M 扇区（16GB）直接返回 nil，使硬件 PWM 标记为"不可用"
+
+## [3.4.0] - 2026-08-03
+
+### 新增
+
+- **eMMC 容量自动识别驱动模式**：`selected_driver()` 在 auto 模式下通过 `/sys/block/mmcblk0/size` 检测 eMMC 容量
+  - >25,000,000 扇区（16GB）→ 自动选择软件 PWM
+  - ≤25,000,000 扇区（8GB）→ 自动选择硬件 PWM
+  - 无法读取时回退到路径探测逻辑
+- CBI 驱动状态横幅新增「eMMC 容量」行，显示闪存版本与对应驱动建议
+
+### 变更
+
+- Controller 新增 `detect_emmc_size()` 函数
+- CBI 新增 `detect_emmc()` 函数
+
+## [3.3.0] - 2026-08-03
+
+### 修复
+
+- **CBI section type 不匹配导致「尚无任何配置」**：`TypedSection` 此前使用 `type="settings"`，但 UCI config 的实际 type 为 `fan`，导致页面始终显示「尚无任何配置」。修正为 `TypedSection("fan")`
+
+### 新增
+
+- **软硬件 PWM 双模式 UI**：支持在同一页面内选择和配置硬件 PWM 或软件 PWM 驱动
+  - 驱动状态横幅：实时显示硬件 PWM 可用性、软 PWM 内核状态、当前占空比
+  - 硬件 PWM 模式：显示 PWM 芯片检测结果（hwmon pwm-fan / sysfs pwmchip）
+  - 软件 PWM 模式：显示内核模块加载状态、当前占空比、GPIO 与周期参数
+  - 「重新加载驱动」按钮：根据所选模式智能重载对应内核模块
+- Controller `find_pwm_path()` 新增 sysfs pwmchip 探测（MT7981 内置 PWM 控制器）
+
+### 变更
+
+- Controller `find_pwm_path()` 扩展为双路径：hwmon pwm-fan → sysfs pwmchip 级联探测
+
 ## [3.2.0] - 2026-08-03
 
 ### 修复
@@ -56,6 +105,10 @@
 - 统一温度采集脚本，支持 CPU、Wi-Fi 芯片、网络 PHY 三级回退
 - LuCI 界面提供静音 / 低速 / 常速 / 全速 / 无极 / 智能六种调速方式
 
+[3.4.2]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.4.2
+[3.4.1]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.4.1
+[3.4.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.4.0
+[3.3.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.3.0
 [3.2.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.2.0
 [3.1.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.1.0
 [3.0.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.0.0
