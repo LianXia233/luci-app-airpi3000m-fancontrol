@@ -1,7 +1,9 @@
 --[[
-LuCI airpi-fancontrol - Controller (v3.0.0)
+LuCI airpi-fancontrol - Controller (v3.3.0)
 Part of luci-app-airpi-fancontrol
 Provides REST API endpoints for fan speed control and status polling.
+Supports hardware PWM (hwmon pwm-fan / sysfs pwmchip) and software PWM
+(airpi_gpio_fan.ko + /sys/kernel/duty_cycle) dual-mode fan control.
 --]]
 
 module("luci.controller.airpi-fancontrol", package.seeall)
@@ -18,17 +20,31 @@ local FANVAL     = "/etc/fanvall"
 local FANVALV    = "/etc/fanvallv.conf"
 
 -- =====================================================================
---  Helper: find the AP3000M hardware pwm-fan interface
+--  Helper: find the AP3000M hardware PWM interface
+--  Priority: hwmon pwm-fan > sysfs pwmchip (MT7981 built-in)
 -- =====================================================================
 local function find_pwm_path()
+    -- Method 1: hwmon pwm-fan (standard kernel pwm-fan driver)
     local handle = io.popen("for p in /sys/class/hwmon/hwmon*/pwm1; do " ..
         "[ -w \"$p\" ] || continue; " ..
         "case \"$(cat \"${p%/*}/name\" 2>/dev/null)\" in " ..
         "pwmfan|pwm-fan) echo \"$p\"; break;; esac; done")
-    if not handle then return nil end
-    local path = handle:read("*l")
-    handle:close()
-    return path
+    if handle then
+        local path = handle:read("*l")
+        handle:close()
+        if path and path ~= "" then return path end
+    end
+    -- Method 2: sysfs pwmchip (e.g., MT7981 built-in PWM controller)
+    -- Check if any pwm channel is exported and writable
+    local h2 = io.popen(
+        "for c in /sys/class/pwm/pwmchip*/pwm*/duty_cycle; do " ..
+        "[ -w \"$c\" ] && echo \"$c\"; break; done 2>/dev/null")
+    if h2 then
+        local path = h2:read("*l")
+        h2:close()
+        if path and path ~= "" then return path end
+    end
+    return nil
 end
 
 local function selected_driver()

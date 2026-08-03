@@ -13,7 +13,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-airpi-fancontrol
-PKG_VERSION:=3.2.0
+PKG_VERSION:=3.3.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community
