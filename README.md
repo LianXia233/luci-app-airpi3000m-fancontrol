@@ -5,7 +5,7 @@ Airpi AP3000M 专用的 OpenWrt 风扇控制插件，提供 LuCI 网页界面与
 [![编译与发布](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/actions/workflows/build.yml/badge.svg)](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/actions/workflows/build.yml)
 [![许可证](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
 
-> **本插件为 Airpi AP3000M 专用，已通过实机测试。**
+> **本插件为 Airpi AP3000M 专用，已通过16G EMMC 软件PWM实机测试。8G EMMC硬件PWM的未知**
 > GPIO 引脚编号、PWM sysfs 路径、温度传感器探测顺序均按该设备适配，装到别的路由器上不会工作。
 
 ---
