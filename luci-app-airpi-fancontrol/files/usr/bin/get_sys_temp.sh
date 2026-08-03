@@ -46,11 +46,12 @@ read_phy_mc() {
 
 read_modem_mc() {
     MODEM_VAL=""
-    lsusb 2>/dev/null | grep -q 5700 || return 1
+    # 通过 ubus modem_ctrl 获取模组温度（兼容 Fibocom/Quectel 等主流模组）
     local t
-    t=$(sendat 1 'AT^CHIPTEMP?' 2>/dev/null | grep 'CHIPTEMP' | sed -n '1p' | cut -d, -f9 | sed '/^$/d')
+    t=$(ubus call modem_ctrl info 2>/dev/null | awk '/temperature/,/value/ {if(/value/) {gsub(/[^0-9]/,"",$2); print $2; exit}}')
+    [ -n "$t" ] || return 1
     case "$t" in ''|*[!0-9]*) return 1 ;; esac
-    local mc=$((t * 100))
+    local mc=$((t * 1000))
     _valid_mc "$mc" && { MODEM_VAL=$mc; echo "$mc"; return 0; }
     return 1
 }

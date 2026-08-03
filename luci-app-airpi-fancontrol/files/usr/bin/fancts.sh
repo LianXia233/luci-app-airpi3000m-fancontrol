@@ -150,11 +150,9 @@ while true; do
         case "$tp" in ''|*[!0-9]*) ;; *) [ "$tp" -gt "$temp_max" ] && temp_max=$tp ;; esac
     fi
 
-    # 温度源4：4G模组（sendat CHIPTEMP）
-    if lsusb 2>/dev/null | grep -q 5700; then
-        tm=$(sendat 1 'AT^CHIPTEMP?' 2>/dev/null | grep 'CHIPTEMP' | sed -n '1p' | cut -d, -f9 | sed '/^$/d')
-        case "$tm" in ''|*[!0-9]*) ;; *) tm=$((tm * 100)); [ "$tm" -gt "$temp_max" ] && temp_max=$tm ;; esac
-    fi
+    # 温度源4：4G模组（ubus modem_ctrl）
+    tm=$(ubus call modem_ctrl info 2>/dev/null | awk '/temperature/,/value/ {if(/value/) {gsub(/[^0-9]/,"",$2); print $2; exit}}')
+    case "$tm" in ''|*[!0-9]*) ;; *) tm=$((tm * 1000)); [ "$tm" -gt "$temp_max" ] && temp_max=$tm ;; esac
 
     # 默认：如果所有源都读不到，设安全值64（最低转速）
     if [ "$temp_max" -le 0 ]; then

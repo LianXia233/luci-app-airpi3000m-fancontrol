@@ -89,6 +89,7 @@
 .fcx .temp-chip{background:var(--c2);border:1px solid var(--bd);border-radius:10px;padding:8px 10px;text-align:center}
 .fcx .temp-chip .tc-label{font-size:10px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px}
 .fcx .temp-chip .tc-val{font-size:15px;font-weight:700;color:var(--t1);margin-top:2px}
+.fcx .temp-chip.active{border-color:var(--cy);box-shadow:0 0 8px rgba(34,211,238,.25)}
 .fcx .temp-chip .tc-unit{font-size:10px;color:var(--t2)}
 @media(min-width:768px){
 .fcx{max-width:920px;padding:28px 28px 64px}
@@ -148,7 +149,7 @@
 
     <div class="stats">
       <div class="stat"><div class="sv"><div id="speedDisplay">当前转速：0</div></div><div class="sl">实时转速</div></div>
-      <div class="stat"><div class="sv"><div id="temperatureDisplay">当前温度：0</div></div><div class="sl">设备温度</div></div>
+      <div class="stat"><div class="sv"><div id="temperatureDisplay">当前温度：0°C</div></div><div id="tempSourceLabel" class="sl">智能温控</div></div>
     </div>
 
     <div class="sec-t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg> 运行模式</div>
@@ -170,17 +171,10 @@
 
     <div id="tempGrid" class="temp-grid"></div>
 
-    <div id="switchContainer" class="switch-container">
-      <span class="switch-label">使用模组温度</span>
-      <div class="switch" id="temperatureSwitch" onclick="toggleSwitch()"></div>
-      <span class="switch-label">使用CPU温度</span>
-    </div>
-    <div id="tempSourceHint"></div>
   </div>
 </div>
 
 <script type="text/javascript">
-        var useModemTemp = false;
         var tms;
         var fanv;
         var currentSpeed = 0;
@@ -207,8 +201,6 @@
         const canvas = document.getElementById('fan');
         const ctx = canvas.getContext('2d');
         const energyFill = document.getElementById('energyFill');
-        const switchContainer = document.getElementById('switchContainer');
-        const temperatureSwitch = document.getElementById('temperatureSwitch');
 
         function handleClick(event) {
             const slider = event.target;
@@ -231,7 +223,6 @@
             document.getElementById('sliderContainer').classList.add('active');
             isSliderActive = true;
             updateButtonStyles(999);
-            switchContainer.classList.remove('active');
             var btn = document.querySelector('button[onclick="toggleSlider()"]');
             btn.classList.add('active');
             if (timer) { clearInterval(timer); timer = null; }
@@ -271,7 +262,7 @@
             else if (temperature < 75) card.classList.add('warm');
             else card.classList.add('hot');
 
-            document.getElementById('temperatureDisplay').innerText = fanv + '：' + temperature + '\u00B0C';
+            document.getElementById('temperatureDisplay').innerText = temperature + '\u00B0C';
         }
 
         function updateButtonStyles(speed) {
@@ -285,20 +276,20 @@
             });
         }
 
-        function fanstop() { XHR.get(API.fanstop,{set:'fanstop',p:'1'},function(x,rv){updateFanAnimation(64);}); resetSlider(); updateButtonStyles(64); switchContainer.classList.remove('active'); fansttp(); }
-        function fanst1()  { XHR.get(API.fanst1,{set:'fanst1',p:'1'},function(x,rv){updateFanAnimation(128);}); resetSlider(); updateButtonStyles(128); switchContainer.classList.remove('active'); fansttp(); }
-        function fanst2()  { XHR.get(API.fanst2,{set:'fanst2',p:'1'},function(x,rv){updateFanAnimation(192);}); resetSlider(); updateButtonStyles(192); switchContainer.classList.remove('active'); fansttp(); }
-        function fanst3()  { XHR.get(API.fanst3,{set:'fanst3',p:'1'},function(x,rv){updateFanAnimation(255);}); resetSlider(); updateButtonStyles(255); switchContainer.classList.remove('active'); fansttp(); }
-        function fanst4()  { XHR.get(API.fanst4,{set:'fanst4',p:'1'},function(x,rv){}); updateButtonStyles(0); switchContainer.classList.add('active'); resetSlider(); }
+        function fanstop() { XHR.get(API.fanstop,{set:'fanstop',p:'1'},function(x,rv){updateFanAnimation(64);}); resetSlider(); updateButtonStyles(64); fansttp(); }
+        function fanst1()  { XHR.get(API.fanst1,{set:'fanst1',p:'1'},function(x,rv){updateFanAnimation(128);}); resetSlider(); updateButtonStyles(128); fansttp(); }
+        function fanst2()  { XHR.get(API.fanst2,{set:'fanst2',p:'1'},function(x,rv){updateFanAnimation(192);}); resetSlider(); updateButtonStyles(192); fansttp(); }
+        function fanst3()  { XHR.get(API.fanst3,{set:'fanst3',p:'1'},function(x,rv){updateFanAnimation(255);}); resetSlider(); updateButtonStyles(255); fansttp(); }
+        function fanst4()  { XHR.get(API.fanst4,{set:'fanst4',p:'1'},function(x,rv){}); updateButtonStyles(0); resetSlider(); }
         function fanswj(v) { XHR.get(API.fanswj,{set:'fanswj',p:v},function(x,rv){}); }
 
         function fanst() {
             XHR.get(API.fanst, {set:'fanst',p:'1'}, function(x, rv) {
                 var pd = parseInt(rv.fanspd, 10);
                 var pd2 = rv.fancts;
-                if (pd2 === '智能') { updateButtonStyles(0); switchContainer.classList.add('active'); }
-                else if (pd2 === '无极') { updateButtonStyles(999); switchContainer.classList.remove('active'); toggleSlider(); }
-                else { updateButtonStyles(pd); switchContainer.classList.remove('active'); }
+                if (pd2 === '智能') { updateButtonStyles(0); }
+                else if (pd2 === '无极') { updateButtonStyles(999); toggleSlider(); }
+                else { updateButtonStyles(pd); }
                 updateFanAnimation(pd);
             });
         }
@@ -307,14 +298,13 @@
             XHR.get(API.fansttp, {set:'fansttp',p:'1'}, function(x, rv) {
                 var t = rv.fansttp;
                 fanv = rv.fansv;
-                var tempSourceHint = document.getElementById('tempSourceHint');
+                var srcLabel = document.getElementById('tempSourceLabel');
                 if (t && t !== 'null') {
                     updateEnergyBar(parseFloat(t));
-                    if (useModemTemp) { tempSourceHint.innerText = '当前温度源: 模组温度'; }
-                    else { tempSourceHint.innerText = '当前温度源: ' + fanv; }
+                    srcLabel.innerText = (fanv && fanv !== '智能') ? '温度源: ' + fanv : '智能温控';
                 } else {
-                    document.getElementById('temperatureDisplay').innerText = fanv + '：--';
-                    tempSourceHint.innerText = '温度数据获取中...';
+                    document.getElementById('temperatureDisplay').innerText = '--°C';
+                    srcLabel.innerText = '获取中…';
                 }
             });
             fansttpa();
@@ -325,15 +315,24 @@
                 var temps = rv.temps || {};
                 var grid = document.getElementById('tempGrid');
                 var labels = {cpu:'CPU',wifi:'WiFi',phy:'PHY',modem:'4G模块'};
+                // 找出最高温度源
+                var maxTemp = -1, maxKey = '';
+                for (var k in labels) {
+                    if (temps[k] !== undefined) {
+                        var tv = parseInt(temps[k]);
+                        if (tv > maxTemp) { maxTemp = tv; maxKey = k; }
+                    }
+                }
                 var html = '';
                 for (var k in labels) {
                     if (temps[k] !== undefined) {
-                        var style = '';
+                        var style = '', chipClass = '';
                         var tv = parseInt(temps[k]);
+                        if (k === maxKey) chipClass = ' active';
                         if (tv > 75) style = 'color:#f87171;';
                         else if (tv > 55) style = 'color:#fbbf24;';
                         else style = 'color:#34d399;';
-                        html += '<div class="temp-chip"><div class="tc-label">'+labels[k]+'</div><div class="tc-val" style="'+style+'">'+tv+'<span class="tc-unit">°C</span></div></div>';
+                        html += '<div class="temp-chip'+chipClass+'"><div class="tc-label">'+labels[k]+'</div><div class="tc-val" style="'+style+'">'+tv+'<span class="tc-unit">°C</span></div></div>';
                     }
                 }
                 if (html) {
@@ -343,15 +342,6 @@
                     grid.classList.remove('active');
                 }
             });
-        }
-
-        function toggleSwitch() {
-            useModemTemp = !useModemTemp;
-            var sw = document.getElementById('temperatureSwitch');
-            sw.classList.toggle('active', useModemTemp);
-            if (useModemTemp) { XHR.get(API.fansvm,{set:'fansvm',p:'1'},function(){}); }
-            else { XHR.get(API.fansvc,{set:'fansvc',p:'1'},function(){}); }
-            fansttp();
         }
 
         function updateFanAnimation(speed) { currentSpeed = speed; drawFan(); }
