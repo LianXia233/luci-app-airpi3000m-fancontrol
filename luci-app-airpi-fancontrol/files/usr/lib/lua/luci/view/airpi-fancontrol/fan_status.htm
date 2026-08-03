@@ -84,7 +84,7 @@
 .fcx .switch.active{background:linear-gradient(135deg,#0891b2,#22d3ee)}
 .fcx .switch.active:before{left:29px}
 .fcx #tempSourceHint{margin-top:12px;font-size:12.5px;color:var(--og);text-align:center;min-height:16px;position:relative;z-index:1}
-.fcx .temp-grid{display:none;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:12px;position:relative;z-index:1}
+.fcx .temp-grid{display:none;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;position:relative;z-index:1}
 .fcx .temp-grid.active{display:grid}
 .fcx .temp-chip{background:var(--c2);border:1px solid var(--bd);border-radius:10px;padding:8px 10px;text-align:center}
 .fcx .temp-chip .tc-label{font-size:10px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px}
@@ -116,6 +116,7 @@
 .fcx .button{padding:12px 4px;font-size:12px}
 .fcx .button svg{width:20px;height:20px}
 .fcx .fmeta .ft{font-size:16px}
+.fcx .temp-grid{grid-template-columns:repeat(2,1fr)}
 }
 </style>
 </head>
@@ -314,7 +315,7 @@
             XHR.get(API.fansttpa, {set:'fansttpa',p:'1'}, function(x, rv) {
                 var temps = rv.temps || {};
                 var grid = document.getElementById('tempGrid');
-                var labels = {cpu:'CPU',wifi:'WiFi',phy:'PHY',modem:'4G模块'};
+                var labels = {cpu:'CPU',wifi:'WiFi',phy:'PHY',modem:'模组温度'};
                 // 找出最高温度源
                 var maxTemp = -1, maxKey = '';
                 for (var k in labels) {

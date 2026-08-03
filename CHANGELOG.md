@@ -2,6 +2,23 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.6.0] - 2026-08-04
+
+### 修复
+
+- **模组温度采集失败**：`read_modem_mc()` 不再依赖 `sendat AT^CHIPTEMP?`（多数新模组的 AT 固件不支持此命令），改为通过 `ubus call modem_ctrl info` + awk 提取温度，兼容 Fibocom FM350-GL 等主流 4G/5G 模组
+
+### 变更
+
+- **移除温度源切换开关**：智能模式统一使用多源取最大值策略（CPU/WiFi/PHY/模组），不再提供手动切换单一温度源的 UI 控件
+- **温度栏文案**：设备温度标签改为"智能温控"，动态显示当前驱动风扇的最高温度源名称
+- **温度卡片**：标签 "4G模块" → "模组温度"（不区分 4G/5G）；桌面端三列一行排列；最高温卡片蓝色边框高亮
+
+### 修复（3.5.0 延续）
+
+- fancts.sh 主循环中模组温度采集同步切换至 ubus 方式
+- 视图移除 `switchContainer` / `toggleSwitch()` / `fansvm` / `fansvc` 相关代码
+
 ## [3.5.0] - 2026-08-04
 
 ### 修复
@@ -124,6 +141,8 @@
 - 统一温度采集脚本，支持 CPU、Wi-Fi 芯片、网络 PHY 三级回退
 - LuCI 界面提供静音 / 低速 / 常速 / 全速 / 无极 / 智能六种调速方式
 
+[3.6.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.6.0
+[3.5.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.5.0
 [3.4.2]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.4.2
 [3.4.1]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.4.1
 [3.4.0]: https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases/tag/v3.4.0
