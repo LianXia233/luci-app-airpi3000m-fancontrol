@@ -5,11 +5,8 @@ Airpi AP3000M 专用的 OpenWrt 风扇控制插件，提供 LuCI 网页界面与
 [![编译与发布](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/actions/workflows/build.yml/badge.svg)](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/actions/workflows/build.yml)
 [![许可证](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
 
-> **本插件为 Airpi AP3000M 专用，不适用于其他机型。**
-> 其中的 GPIO 引脚编号、PWM sysfs 路径、温度传感器探测顺序均按该设备适配，装到别的路由器上不会工作。
-> <span style="color:#d00;"><strong>温馨提示：</strong>目前还没有进行实机测试，不保证功能可用。</span>
-> <span style="color:#d00;">如需使用，请先确认你的设备、内核版本和驱动环境与本项目匹配。</span>
-> <span style="color:#d00;">若遇到异常，请以实际日志和设备表现为准，谨慎安装与升级。</span>
+> **本插件为 Airpi AP3000M 专用，已通过实机测试。**
+> GPIO 引脚编号、PWM sysfs 路径、温度传感器探测顺序均按该设备适配，装到别的路由器上不会工作。
 
 ---
 
@@ -31,14 +28,15 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 
 ## 功能特性
 
-- **双驱动支持**，默认自动识别，也可在网页端手动切换：
-  - **硬件 PWM**：检测到内核 `pwm-fan`（hwmon）接口时优先使用
-  - **软件 PWM**：未检测到硬件接口时使用本项目的 `kmod-airpi-gpio-fan` GPIO 位翻转驱动
+- **eMMC 容量自动识别**：通过闪存容量自动判断驱动模式（16GB→软件PWM，8GB→硬件PWM），无需手动选择
+- **三列卡片式状态面板**：eMMC 闪存信息、硬件 PWM 状态、软件 PWM 状态一目了然，动态配色指示
+- **双驱动支持**：自动识别模式下按 eMMC 容量自动选择，也可在网页端手动切换
+  - **硬件 PWM**：8GB 版本使用内核 `pwm-fan`（hwmon）接口
+  - **软件 PWM**：16GB 版本使用 `kmod-airpi-gpio-fan` GPIO 位翻转驱动
 - **四档手动调速**：静音 25% / 低速 50% / 常速 75% / 全速 100%
 - **无极调速**：滑块任意设定 0–255 占空比
 - **智能温控**：按温度曲线自动调速
 - **多温度源自动回退**：CPU → Wi-Fi 芯片 → 网络 PHY，并支持切换到 5G 模组温度
-- **实时状态显示**：当前转速、当前模式、当前温度及温度来源
 
 ---
 
@@ -80,19 +78,21 @@ opkg install ./luci-app-airpi-fancontrol_*.ipk ./kmod-airpi-gpio-fan_*.ipk
 
 ### 选择风扇驱动
 
-默认的「自动识别」模式会检测可写的 `pwm-fan` hwmon 接口：检测到则使用硬件 PWM，否则加载并使用软件 PWM。也可在 **状态 → 风扇设置** 中手动选择：
+AP3000M 有两个硬件版本，闪存容量不同，支持的 PWM 方式也不同。默认的「自动识别」模式通过读取 `/sys/block/mmcblk0/size` 判断 eMMC 容量来自动选择：
 
-- **使用 PWM 驱动**：强制使用已检测到的硬件 PWM 控制器
-- **使用软 PWM 模拟驱动**：强制使用 GPIO 高频翻转模拟 PWM
+| eMMC 容量 | 自动选择的驱动 | 说明 |
+| --- | --- | --- |
+| 16GB | 软件 PWM | 16GB 版本未引出硬件 PWM 引脚，仅支持 GPIO 软件 PWM |
+| 8GB | 硬件 PWM | 8GB 版本已连接 `pwm-fan` hwmon 接口 |
 
-选择软 PWM 后可继续配置：
+也可在 **状态 → 风扇设置** 中手动覆盖自动选择。选择软 PWM 后可继续配置：
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | 风扇 GPIO | `540` | 驱动风扇的 GPIO 编号 |
 | 模拟 PWM 周期(μs) | `15000` | 周期越大越容易啸叫，越小 CPU 占用越高 |
 
-修改参数后需先「保存并应用」，再点击 **重新应用新的参数** 卸载并重新加载驱动才会生效。
+修改参数后需先「保存并应用」，再点击 **重新加载驱动** 卸载并重新加载驱动才会生效。
 
 ### 调速模式
 
