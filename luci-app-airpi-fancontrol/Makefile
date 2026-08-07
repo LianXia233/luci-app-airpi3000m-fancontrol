@@ -5,15 +5,21 @@
 # luci-app-airpi-fancontrol
 #   Fan control web UI for the AirPi AP3000M (MediaTek MT7981B / filogic).
 #
+# v4.0.0: rewritten as a modern client-side (JS) LuCI application.
+# The legacy Lua controller stack (luci-compat / luci-lua-runtime) was
+# removed from immortalwrt master and recent OpenWrt snapshots, so the
+# Lua version can no longer be installed there. The JS frontend works on
+# both new (immortalwrt master, kernel 6.18) and older (24.10) trees.
+#
 # Deliberately built on plain package.mk instead of luci.mk so that the
-# repository can be dropped into any OpenWrt SDK's package/ directory
-# without requiring the LuCI feed source tree to be present.
+# repository can be dropped into any OpenWrt/ImmortalWrt SDK's package/
+# directory without requiring the LuCI feed build system (luci.mk).
 #
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-airpi-fancontrol
-PKG_VERSION:=3.5.0
+PKG_VERSION:=4.0.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community
@@ -27,7 +33,7 @@ define Package/$(PKG_NAME)
   SUBMENU:=3. Applications
   TITLE:=LuCI support for AirPi AP3000M fan control
   PKGARCH:=all
-  DEPENDS:=+luci-compat +luci-lua-runtime +kmod-hwmon-pwmfan
+  DEPENDS:=+luci-base +kmod-hwmon-pwmfan
   URL:=https://github.com/LianXia233/luci-app-airpi3000m-fancontrol
 endef
 
@@ -60,27 +66,31 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_CONF) ./files/etc/config/airpi-fan $(1)/etc/config/airpi-fan
 
 	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) ./files/usr/bin/airpi-fanctl.sh $(1)/usr/bin/airpi-fanctl.sh
 	$(INSTALL_BIN) ./files/usr/bin/fancts.sh $(1)/usr/bin/fancts.sh
 	$(INSTALL_BIN) ./files/usr/bin/get_sys_temp.sh $(1)/usr/bin/get_sys_temp.sh
 
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
-	$(INSTALL_DATA) ./files/usr/lib/lua/luci/controller/airpi-fancontrol.lua \
-		$(1)/usr/lib/lua/luci/controller/airpi-fancontrol.lua
+	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+	$(INSTALL_DATA) ./files/usr/share/luci/menu.d/luci-app-airpi-fancontrol.json \
+		$(1)/usr/share/luci/menu.d/luci-app-airpi-fancontrol.json
 
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi
-	$(INSTALL_DATA) ./files/usr/lib/lua/luci/model/cbi/airpi-fancontrol.lua \
-		$(1)/usr/lib/lua/luci/model/cbi/airpi-fancontrol.lua
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DATA) ./files/usr/share/rpcd/acl.d/luci-app-airpi-fancontrol.json \
+		$(1)/usr/share/rpcd/acl.d/luci-app-airpi-fancontrol.json
 
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/airpi-fancontrol
-	$(INSTALL_DATA) ./files/usr/lib/lua/luci/view/airpi-fancontrol/fan_status.htm \
-		$(1)/usr/lib/lua/luci/view/airpi-fancontrol/fan_status.htm
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/airpi-fancontrol
+	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/airpi-fancontrol/fancontrol.js \
+		$(1)/www/luci-static/resources/view/airpi-fancontrol/fancontrol.js
+	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/airpi-fancontrol/settings.js \
+		$(1)/www/luci-static/resources/view/airpi-fancontrol/settings.js
 endef
 
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/airpi-fancontrol enable >/dev/null 2>&1
-rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null
+/etc/init.d/rpcd reload >/dev/null 2>&1
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.json /tmp/luci-modulecache/* 2>/dev/null
 exit 0
 endef
 

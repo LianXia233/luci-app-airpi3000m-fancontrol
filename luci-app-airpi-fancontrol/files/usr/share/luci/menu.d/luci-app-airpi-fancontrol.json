@@ -1,0 +1,24 @@
+{
+	"admin/status/airpi-fancontrol": {
+		"title": "风扇控制",
+		"order": 94,
+		"action": {
+			"type": "view",
+			"path": "airpi-fancontrol/fancontrol"
+		},
+		"depends": {
+			"acl": [ "luci-app-airpi-fancontrol" ]
+		}
+	},
+	"admin/status/airpi-fancontrol-settings": {
+		"title": "风扇设置",
+		"order": 100,
+		"action": {
+			"type": "view",
+			"path": "airpi-fancontrol/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-airpi-fancontrol" ]
+		}
+	}
+}

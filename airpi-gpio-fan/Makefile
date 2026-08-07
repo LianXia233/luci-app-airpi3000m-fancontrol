@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=airpi-gpio-fan
-PKG_VERSION:=3.1.0
+PKG_VERSION:=3.2.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community

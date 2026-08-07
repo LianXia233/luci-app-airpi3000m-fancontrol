@@ -2,6 +2,19 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.0.0] - 2026-08-07
+
+### 重大变更（适配 immortalwrt master / 内核 6.18)
+
+- **LuCI 前端由 Lua 重写为 JS**：immortalwrt master（内核 6.18.41）的 LuCI 已移除 `luci-compat` / `luci-lua-runtime`，Lua 版应用在新源码树上无法编译安装。现改为标准 client-side JS 视图（`view/airpi-fancontrol/fancontrol.js` + `settings.js`）,24.10 及更早版本同样兼容
+- **删除 Lua 代码**：controller / CBI model / htm 模板全部移除，依赖从 `+luci-compat +luci-lua-runtime` 改为 `+luci-base`
+- **新增 `airpi-fanctl.sh` 后端助手**：JS 前端通过 rpcd `fs.exec` 调用该脚本完成风扇控制、温度采集、驱动重载；配套 `menu.d` 菜单注册与 `rpcd/acl.d` 权限声明
+
+### 变更
+
+- **kmod-airpi-gpio-fan 3.2.0**：确认兼容内核 6.6 – 6.18+(`hrtimer_setup` 于 ≥6.15 启用；legacy GPIO API 在 6.18 仍可用）,C 源码无需改动
+- **CI 新增 ImmortalWrt master 快照 SDK 编译目标**：每次构建都会用最新 master 内核（当前 6.18.41）实测编译 LuCI 应用与内核模块，确保持续可编译
+
 ## [3.6.0] - 2026-08-04
 
 ### 修复

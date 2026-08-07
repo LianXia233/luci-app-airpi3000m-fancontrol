@@ -3,6 +3,10 @@
  *
  * Reconstructed from Airpi-gpio-fan.ko (vermagic: 6.6.133 SMP mod_unload aarch64)
  *
+ * Kernel compatibility: 6.6 LTS up to 6.18+ (immortalwrt master).
+ *  - hrtimer_setup() is used on >= 6.15 (hrtimer_init() + .function was removed)
+ *  - legacy GPIO integer API is still provided by gpiolib on 6.18
+ *
  * This driver creates a software PWM signal on a GPIO pin using a high-resolution
  * timer. The PWM duty cycle is controlled via /sys/kernel/duty_cycle (0-255).
  *
@@ -27,7 +31,7 @@
 #include <linux/version.h>
 
 #define DRV_NAME    "airpi_gpio_fan"
-#define DRV_VERSION "3.1.0"
+#define DRV_VERSION "3.2.0"
 
 /* Module parameters */
 static int fangpio = 540;
