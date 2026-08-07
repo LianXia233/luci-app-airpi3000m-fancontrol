@@ -49,7 +49,9 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 | `luci-app-airpi-fancontrol` | `all` | LuCI 网页界面、温控守护进程、init 脚本 |
 | `kmod-airpi-gpio-fan` | `aarch64_cortex-a53` | GPIO 软件 PWM 内核驱动（仅软 PWM 模式需要） |
 
-依赖：`luci-compat`、`luci-lua-runtime`、`kmod-hwmon-pwmfan`。
+依赖：`luci-base`、`kmod-hwmon-pwmfan`。
+
+> v4.0.0 起前端为标准 JS 版 LuCI 应用（client-side view + rpcd exec 后端助手 `airpi-fanctl.sh`），不再需要 `luci-compat` / `luci-lua-runtime`。
 
 ---
 
@@ -59,6 +61,7 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 
 | 固件版本 | 包格式 | 包管理器 |
 | --- | --- | --- |
+| ImmortalWrt master 快照（内核 6.18） | `.apk`（immortalwrt-master 构建产物） | `apk` |
 | OpenWrt 25.12.x 及更新 | `.apk` | `apk` |
 | OpenWrt 24.10.x 及更早 | `.ipk` | `opkg` |
 
@@ -72,7 +75,7 @@ opkg install ./luci-app-airpi-fancontrol_*.ipk ./kmod-airpi-gpio-fan_*.ipk
 
 安装完成后刷新浏览器缓存，在 **状态 → 风扇控制** 查看运行状态，在 **状态 → 风扇设置** 调整驱动参数。
 
-> **内核模块与内核版本严格绑定。** `kmod-airpi-gpio-fan` 必须与本机固件的内核版本一致才能加载，请务必下载与固件大版本匹配的那一份。若只使用硬件 PWM 模式，可以不装这个内核模块。
+> **内核模块不再强制匹配内核版本。** 自 v4.1.0 起，`kmod-airpi-gpio-fan` 已删除包管理器层面的 `kernel (=版本)` 硬依赖（Makefile 中 `EXTRA_DEPENDS` 已清空），opkg/apk 不再因内核版本号不同而拒绝安装。但模块仍带有 vermagic，加载时由 `kmodloader` 校验，请使用与本机内核 vermagic 一致的构建产物（CI 已用 immortalwrt master 快照实测）。若只使用硬件 PWM 模式，可以不装这个内核模块。
 
 ---
 
@@ -183,9 +186,11 @@ cat /sys/kernel/duty_cycle           # 读取当前值
 推送 `v` 开头的 tag 即自动编译并发布：
 
 ```sh
-git tag v3.1.0
-git push origin v3.1.0
+git tag v4.1.0
+git push origin v4.1.0
 ```
+
+CI 会同时用 OpenWrt 24.10.8、OpenWrt 25.12.5 与 ImmortalWrt master 快照 SDK 编译三个目标，其中 ImmortalWrt master 目标用于持续验证最新内核（当前 6.18）下的可编译性。
 
 也可在 Actions 页面手动运行 **编译与发布**，填入发布标签即可创建 Release；留空则仅上传构建产物。
 
@@ -260,14 +265,19 @@ ls /sys/kernel/duty_cycle          # sysfs 节点是否存在
 │   └── src/
 │       ├── Makefile                  Kbuild 编译定义
 │       └── airpi-gpio-fan.c          驱动源码
-├── luci-app-airpi-fancontrol/        LuCI 应用
+├── luci-app-airpi-fancontrol/        LuCI 应用(JS 版)
 │   ├── Makefile                      OpenWrt 软件包定义
+│   ├── htdocs/luci-static/resources/view/airpi-fancontrol/
+│   │   ├── fancontrol.js             风扇控制台视图(状态页)
+│   │   └── settings.js               风扇设置视图
 │   └── files/
 │       ├── etc/config/airpi-fan      UCI 配置
 │       ├── etc/init.d/airpi-fancontrol  服务脚本
+│       ├── usr/bin/airpi-fanctl.sh   JS 前端后端助手(rpcd exec)
 │       ├── usr/bin/fancts.sh         温控守护进程
 │       ├── usr/bin/get_sys_temp.sh   温度采集脚本
-│       └── usr/lib/lua/luci/         控制器 / CBI 模型 / 视图
+│       ├── usr/share/luci/menu.d/    LuCI 菜单注册
+│       └── usr/share/rpcd/acl.d/     RPCD 访问控制声明
 ├── CHANGELOG.md                      更新日志
 └── LICENSE                           GPL-2.0
 ```

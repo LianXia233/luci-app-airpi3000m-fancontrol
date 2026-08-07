@@ -2,6 +2,14 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.1.0] - 2026-08-07
+
+### 变更
+
+- **内核模块不再强制匹配内核版本**：`kmod-airpi-gpio-fan` 的 `KernelPackage` 段中显式设置 `EXTRA_DEPENDS:=`（覆盖 `include/kernel.mk` 默认注入的 `kernel (=版本~vermagic-r发布)` 硬依赖）。opkg/apk 不再因为内核版本号不同而拒绝安装，提升跨小版本固件的可用性与安装体验
+- **保留 vermagic 校验**：模块仍带有 vermagic，加载时由 `kmodloader` 校验。请使用与本机内核 vermagic 一致的构建产物（CI 已用 immortalwrt master 快照 SDK 实测编译）
+- **kmod-airpi-gpio-fan 3.3.0**：包版本号随此次打包策略调整递增
+
 ## [4.0.0] - 2026-08-07
 
 ### 重大变更（适配 immortalwrt master / 内核 6.18)

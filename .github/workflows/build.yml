@@ -193,7 +193,7 @@ jobs:
             echo "- \`luci-app-airpi-fancontrol\`：LuCI 网页控制界面与温控守护进程（架构 all）"
             echo "- \`kmod-airpi-gpio-fan\`：GPIO 软件 PWM 内核驱动（架构 aarch64_cortex-a53）"
             echo
-            echo "> 内核模块与内核版本严格绑定，请选择与本机固件大版本一致的安装包。"
+            echo "> 自 v4.1.0 起内核模块不再强制匹配内核版本（包管理器层面已移除 \`kernel (=版本)\` 硬依赖），但仍需与本机内核 vermagic 一致才能加载；若仅用硬件 PWM 模式可不装内核模块。"
             echo
             echo "### 安装方法"
             echo

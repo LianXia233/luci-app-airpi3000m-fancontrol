@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=airpi-gpio-fan
-PKG_VERSION:=3.2.0
+PKG_VERSION:=3.3.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community
@@ -21,6 +21,12 @@ define KernelPackage/airpi-gpio-fan
   SUBMENU:=Other modules
   TITLE:=AirPi GPIO soft-PWM fan driver
   DEPENDS:=@TARGET_mediatek_filogic
+  # 不强制匹配内核版本：默认 KernelPackage 会自动注入
+  #   EXTRA_DEPENDS:=kernel (=版本~vermagic-r发布)
+  # 把该项清空后，opkg/apk 不再因为内核版本号不同而拒绝安装。
+  # 注意：模块仍带有 vermagic，加载时由 kmodloader 校验，
+  #       因此请用与本机内核 vermagic 一致的 SDK 编译（CI 已按 immortalwrt master 实测）。
+  EXTRA_DEPENDS:=
   FILES:=$(PKG_BUILD_DIR)/airpi-gpio-fan.ko
 endef
 
