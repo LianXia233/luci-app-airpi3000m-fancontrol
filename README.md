@@ -8,6 +8,8 @@ Airpi AP3000M 专用的 OpenWrt 风扇控制插件，提供 LuCI 网页界面与
 > **本插件为 Airpi AP3000M 专用，已通过16G EMMC 软件PWM实机测试。8G EMMC硬件PWM的未知**
 > GPIO 引脚编号、PWM sysfs 路径、温度传感器探测顺序均按该设备适配，装到别的路由器上不会工作。
 
+> **v4.0.0 兼容性说明**：LuCI 前端已重写为 JS 版（Lua 版依赖的 `luci-compat` 已从 immortalwrt master 移除），同时兼容 OpenWrt 24.10（内核 6.6）与 immortalwrt master（内核 6.18）。每次 CI 构建都会使用 immortalwrt master 快照 SDK 实测编译，保证跟上最新内核。
+
 ---
 
 ## 设备信息
