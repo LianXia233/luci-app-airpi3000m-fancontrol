@@ -1,11 +1,20 @@
 /*
  * airpi-gpio-fan.c - AirPi GPIO Bit-Bang Soft-PWM Fan Driver
  *
- * Reconstructed from Airpi-gpio-fan.ko (vermagic: 6.6.133 SMP mod_unload aarch64)
+ * Kernel compatibility: 4.14 LTS up to latest immortalwrt mainline (6.12+).
  *
- * Kernel compatibility: 6.6 LTS up to 6.18+ (immortalwrt master).
- *  - hrtimer_setup() is used on >= 6.15 (hrtimer_init() + .function was removed)
- *  - legacy GPIO integer API is still provided by gpiolib on 6.18
+ *  GPIO API selection:
+ *    - Kernels < 6.14 : legacy integer GPIO API (gpio_request / gpio_set_value)
+ *                       Symbols are in the GPIO_LEGACY export namespace from 5.15;
+ *                       MODULE_IMPORT_NS is declared below for strict-namespace kernels.
+ *    - Kernels >= 6.14: GPIO descriptor API via gpio_to_desc() + gpiod_* functions.
+ *                       The legacy gpio_request() is still used to claim the pin by
+ *                       number (there is no device-context-free gpiod equivalent);
+ *                       all direction/value operations use the descriptor API.
+ *
+ *  hrtimer API:
+ *    - Kernels < 6.15 : hrtimer_init() + .function assignment
+ *    - Kernels >= 6.15: hrtimer_setup() (hrtimer_init was removed)
  *
  * This driver creates a software PWM signal on a GPIO pin using a high-resolution
  * timer. The PWM duty cycle is controlled via /sys/kernel/duty_cycle (0-255).
@@ -22,7 +31,6 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
-#include <linux/gpio.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/kobject.h>
@@ -30,8 +38,35 @@
 #include <linux/delay.h>
 #include <linux/version.h>
 
+/*
+ * GPIO API: choose descriptor-based (gpiod) on kernels >= 6.14, and legacy
+ * integer API on older kernels.  Both paths need the legacy gpio_request()
+ * call to claim the numbered GPIO because there is no descriptor-API equivalent
+ * that works without a device context (DT/ACPI).
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+#  include <linux/gpio.h>          /* gpio_request / gpio_free (claim by number) */
+#  include <linux/gpio/consumer.h> /* gpio_to_desc / gpiod_direction_output / gpiod_set_value */
+#  define FAN_USE_GPIOD 1
+#else
+#  include <linux/gpio.h>
+#  define FAN_USE_GPIOD 0
+#endif
+
+/*
+ * Legacy GPIO integer symbols (gpio_request, gpio_set_value, …) were moved to
+ * the GPIO_LEGACY export-symbol namespace in Linux 5.15.  Declare the import so
+ * modules load correctly on kernels built with strict namespace enforcement.
+ * In kernel 6.13 the MODULE_IMPORT_NS() macro changed to take a string literal.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+MODULE_IMPORT_NS("GPIO_LEGACY");
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+MODULE_IMPORT_NS(GPIO_LEGACY);
+#endif
+
 #define DRV_NAME    "airpi_gpio_fan"
-#define DRV_VERSION "3.2.0"
+#define DRV_VERSION "3.4.0"
 
 /* Module parameters */
 static int fangpio = 540;
