@@ -92,6 +92,10 @@ static ktime_t kperiod;
 static int timer_running = 0;
 static DEFINE_MUTEX(pwm_mutex);
 
+#if FAN_USE_GPIOD
+static struct gpio_desc *fan_desc;
+#endif
+
 /* Number of ticks per period: cycle+1 slices for 0..cycle resolution */
 #define PWM_TICKS 256  /* 0-255 = 256 slices */
 
@@ -111,7 +115,11 @@ static enum hrtimer_restart pwm_timer_cb(struct hrtimer *timer)
 	unsigned int slice_us;
 
 	if (!fanen) {
+#if FAN_USE_GPIOD
+		gpiod_set_value(fan_desc, 0);
+#else
 		gpio_set_value(fangpio, 0);
+#endif
 		tick = 0;
 		hrtimer_forward(timer, ktime_get(), kperiod);
 		return HRTIMER_RESTART;
@@ -123,10 +131,19 @@ static enum hrtimer_restart pwm_timer_cb(struct hrtimer *timer)
 
 	on_ticks = (unsigned long)duty_cycle_val;
 
-	if (tick < on_ticks && on_ticks > 0)
+	if (tick < on_ticks && on_ticks > 0) {
+#if FAN_USE_GPIOD
+		gpiod_set_value(fan_desc, 1);
+#else
 		gpio_set_value(fangpio, 1);
-	else
+#endif
+	} else {
+#if FAN_USE_GPIOD
+		gpiod_set_value(fan_desc, 0);
+#else
 		gpio_set_value(fangpio, 0);
+#endif
+	}
 
 	tick++;
 	if (tick >= PWM_TICKS)
@@ -235,7 +252,17 @@ static int __init airpi_gpio_fan_init(void)
 		return ret;
 	}
 
+#if FAN_USE_GPIOD
+	fan_desc = gpio_to_desc(fangpio);
+	if (!fan_desc) {
+		pr_err(DRV_NAME ": Failed to get GPIO descriptor for pin %d\n", fangpio);
+		gpio_free(fangpio);
+		return -ENODEV;
+	}
+	ret = gpiod_direction_output(fan_desc, 0);
+#else
 	ret = gpio_direction_output(fangpio, 0);
+#endif
 	if (ret) {
 		pr_err(DRV_NAME ": Failed to set GPIO %d direction (err=%d)\n", fangpio, ret);
 		gpio_free(fangpio);
@@ -268,7 +295,11 @@ static void __exit airpi_gpio_fan_exit(void)
 	sysfs_remove_file(kernel_kobj, &duty_cycle_attr.attr);
 
 	/* Output LOW on exit to stop fan */
+#if FAN_USE_GPIOD
+	gpiod_set_value(fan_desc, 0);
+#else
 	gpio_set_value(fangpio, 0);
+#endif
 	gpio_free(fangpio);
 
 	pr_info(DRV_NAME ": Module unloaded\n");

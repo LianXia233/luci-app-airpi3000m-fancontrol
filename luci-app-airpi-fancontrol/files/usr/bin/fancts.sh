@@ -1,11 +1,14 @@
 #!/bin/sh
-# fancts.sh - AirPi Fan Control Daemon v3.5.0
+# fancts.sh - AirPi Fan Control Daemon v3.6.0
 # Part of luci-app-airpi-fancontrol
 #
 # Reads temperature from get_sys_temp.sh and adjusts fan PWM according
 # to a stepped temperature curve. Uses the hottest available sensor to
 # prevent thermal throttling. Supports both soft-PWM (airpi-gpio-fan.ko
 # via /sys/kernel/duty_cycle) and hard-PWM (pwm-fan.ko via hwmon).
+#
+# Dynamic thermal_zone / hwmon enumeration at every loop iteration;
+# no hardcoded thermal_zone0 or hwmon1 assumptions.
 
 LOCKFILE="/var/run/airpi-fancontrol.pid"
 CONFIG_FILE="/etc/config/airpi-fan"
@@ -85,7 +88,6 @@ ensure_driver() {
     lsmod | grep -q '^airpi_gpio_fan[[:space:]]' && return 0
     gpio=$(uci get airpi-fan.settings.fan_gpio 2>/dev/null || echo "540")
     freq=$(uci get airpi-fan.settings.fan_freq 2>/dev/null || echo "15000")
-    # 用模块名而非完整路径，兼容不同内核版本的安装路径
     insmod airpi-gpio-fan fangpio="$gpio" cycle=255 period="$freq" fanen=1 2>/dev/null \
         || modprobe airpi_gpio_fan fangpio="$gpio" cycle=255 period="$freq" fanen=1 2>/dev/null
 }
@@ -117,8 +119,50 @@ check_manual_mode() {
     esac
 }
 
+# ---- Dynamic thermal_zone collector ----
+# Iterate ALL thermal zones and return the highest temperature (millidegrees C)
+collect_thermal_zones_mc() {
+    local tz temp ret max
+    max=0
+    ret=1
+    for tz in /sys/class/thermal/thermal_zone*; do
+        [ -d "$tz" ] || continue
+        [ -r "$tz/temp" ] || continue
+        temp=$(cat "$tz/temp" 2>/dev/null)
+        case "$temp" in ''|*[!0-9-]*) continue ;; esac
+        [ "$temp" -ge 1000 ] 2>/dev/null || continue
+        [ "$temp" -gt "$max" ] && max=$temp
+        ret=0
+    done
+    echo "$max"
+    return $ret
+}
+
+# ---- Dynamic hwmon collector ----
+# Iterate ALL hwmon devices (excluding pwmfan), return highest temp1_input
+collect_hwmon_mc() {
+    local hw temp ret max name
+    max=0
+    ret=1
+    for hw in /sys/class/hwmon/hwmon*; do
+        [ -d "$hw" ] || continue
+        [ -r "$hw/temp1_input" ] || continue
+        # skip pwmfan-type hwmon
+        if [ -r "$hw/name" ]; then
+            name=$(cat "$hw/name" 2>/dev/null)
+            case "$name" in pwmfan|pwm-fan|fan) continue ;; esac
+        fi
+        temp=$(cat "$hw/temp1_input" 2>/dev/null)
+        case "$temp" in ''|*[!0-9-]*) continue ;; esac
+        [ "$temp" -ge 1000 ] 2>/dev/null || continue
+        [ "$temp" -gt "$max" ] && max=$temp
+        ret=0
+    done
+    echo "$max"
+    return $ret
+}
+
 # ---- Main ----
-# 不再禁用thermal zone，让温度传感器持续更新
 select_driver
 ensure_driver
 check_manual_mode
@@ -130,11 +174,9 @@ while true; do
     # 收集全部可用温度源，取最大值（毫摄氏度）
     temp_max=0
 
-    # 温度源1：CPU thermal zone
-    if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
-        t=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
-        case "$t" in ''|*[!0-9]*) ;; *) [ "$t" -gt "$temp_max" ] && temp_max=$t ;; esac
-    fi
+    # 温度源1：全部 thermal zones（动态枚举）
+    t=$(collect_thermal_zones_mc 2>/dev/null)
+    case "$t" in ''|*[!0-9]*) ;; *) [ "$t" -gt "$temp_max" ] && temp_max=$t ;; esac
 
     # 温度源2：WiFi芯片（iwpriv）
     for dev in ra0 rax0 rai0; do
@@ -144,11 +186,9 @@ while true; do
         break
     done
 
-    # 温度源3：PHY hwmon
-    if [ -r /sys/class/hwmon/hwmon1/temp1_input ]; then
-        tp=$(cat /sys/class/hwmon/hwmon1/temp1_input 2>/dev/null)
-        case "$tp" in ''|*[!0-9]*) ;; *) [ "$tp" -gt "$temp_max" ] && temp_max=$tp ;; esac
-    fi
+    # 温度源3：全部 hwmon 设备（动态枚举，排除 pwmfan）
+    tp=$(collect_hwmon_mc 2>/dev/null)
+    case "$tp" in ''|*[!0-9]*) ;; *) [ "$tp" -gt "$temp_max" ] && temp_max=$tp ;; esac
 
     # 温度源4：4G模组（ubus modem_ctrl）
     tm=$(ubus call modem_ctrl info 2>/dev/null | awk '/temperature/,/value/ {if(/value/) {gsub(/[^0-9]/,"",$2); print $2; exit}}')

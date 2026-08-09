@@ -1,6 +1,6 @@
 #!/bin/sh /etc/rc.common
 # AirPi Fan Control unified init script (procd)
-# Part of luci-app-airpi-fancontrol v3.5.0
+# Part of luci-app-airpi-fancontrol v4.2.0
 
 USE_PROCD=1
 START=99

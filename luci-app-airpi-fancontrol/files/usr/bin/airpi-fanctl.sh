@@ -1,5 +1,5 @@
 #!/bin/sh
-# airpi-fanctl.sh - backend helper for the LuCI JS frontend (v4.0.0)
+# airpi-fanctl.sh - backend helper for the LuCI JS frontend (v4.2.0)
 # Part of luci-app-airpi-fancontrol
 #
 # The modern JS-based LuCI (immortalwrt master / OpenWrt 24.10+) no longer

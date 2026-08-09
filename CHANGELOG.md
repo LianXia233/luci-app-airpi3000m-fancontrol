@@ -2,6 +2,25 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.2.0] - 2026-08-09
+
+### 新增
+
+- **内核模块适配所有内核版本**：`airpi-gpio-fan.c` 全函数体完成 `gpio_set_value` → `gpiod_set_value` 条件分支
+  - 内核 ≥6.14 使用 `gpio_to_desc()` + `gpiod_direction_output()` + `gpiod_set_value()` 描述符 API
+  - 内核 <6.14 保持原有 `gpio_direction_output()` + `gpio_set_value()` 整数 API
+  - 新增全局 `struct gpio_desc *fan_desc` 描述符指针（仅 `#if FAN_USE_GPIOD` 时编译）
+  - `MODULE_IMPORT_NS("GPIO_LEGACY")` / `MODULE_IMPORT_NS(GPIO_LEGACY)` 兼容全部内核（5.15+ / 6.13+）
+  - `hrtimer_setup()` 兼容内核 ≥6.15
+- **动态传感器发现**：`get_sys_temp.sh` 和 `fancts.sh` 不再硬编码 `thermal_zone0` / `hwmon1`
+  - `get_sys_temp.sh`：`find_cpu_zone()` 扫描 `/sys/class/thermal/thermal_zone*/type` 匹配 CPU zone，`find_phy_hwmon()` 扫描 `/sys/class/hwmon/hwmon*` 排除 pwmfan 型设备
+  - `fancts.sh`：`collect_thermal_zones_mc()` / `collect_hwmon_mc()` 每轮循环动态枚举全部 thermal zone 和 hwmon 设备，取最高温度
+  - 传感器路径首次探测后缓存，避免每轮重复遍历
+
+### 变更
+
+- **kmod-airpi-gpio-fan 3.4.0**：包版本号递增；全函数体完成 gpiod 描述符 API 适配，可编译运行于内核 4.14 – 6.18+
+
 ## [4.1.0] - 2026-08-07
 
 ### 变更
