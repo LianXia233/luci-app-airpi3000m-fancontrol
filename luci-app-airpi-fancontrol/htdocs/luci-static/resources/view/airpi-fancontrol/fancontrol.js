@@ -257,7 +257,8 @@ return view.extend({
 		}, this), 5);
 
 		this.animAlive = true;
-		this.drawFan();
+		/* Defer first draw so the canvas is already attached to the DOM. */
+		requestAnimationFrame(L.bind(function() { this.drawFan(); }, this));
 
 		return E('div', {}, [
 			E('style', { 'type': 'text/css' }, CSS),
@@ -415,13 +416,16 @@ return view.extend({
 		this.refs.tempDisplay.textContent = temp + '°C';
 	},
 
-	drawFan: function() {
+	drawFan: function(retry) {
 		var self = this;
 		var canvas = this.refs.canvas;
+		retry = retry || 0;
 		if (!canvas || !this.animAlive)
 			return;
 		if (!document.contains(canvas)) {
-			this.animAlive = false;
+			/* Canvas may not be attached yet on the first frame; retry briefly. */
+			if (retry < 120)
+				requestAnimationFrame(function() { self.drawFan(retry + 1); });
 			return;
 		}
 		var ctx = canvas.getContext('2d');
@@ -430,10 +434,15 @@ return view.extend({
 
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
 		var cx = canvas.width / 2, cy = canvas.height / 2;
-		var bladeLength = 70, bladeWidth = 36, bladeArc = Math.PI / 4;
-		var colorValue = Math.floor((this.currentSpeed / 255) * 255);
-		var color = 'rgba(' + colorValue + ', 0, ' + (255 - colorValue) + ', 0.65)';
-		var speedFactor = 0.3 + ((this.currentSpeed / 255) * 3.7);
+		var bladeLength = 70, bladeWidth = 30, bladeArc = Math.PI / 3.5;
+		var arcStartX = bladeLength * Math.sin(bladeArc / 2);
+		var arcStartY = -bladeLength * Math.cos(bladeArc / 2);
+		var t = Math.min(Math.max(this.currentSpeed / 255, 0), 1);
+		var r = Math.floor(34 + t * 221);
+		var g = Math.floor(211 - t * 211);
+		var b = Math.floor(238 - t * 182);
+		var color = 'rgba(' + r + ',' + g + ',' + b + ',0.9)';
+		var speedFactor = 0.3 + (t * 3.7);
 		var angle = (performance.now() / 150) * speedFactor;
 
 		for (var i = 0; i < 5; i++) {
@@ -442,14 +451,17 @@ return view.extend({
 			ctx.rotate(angle + (i * (2 * Math.PI / 5)));
 			ctx.beginPath();
 			ctx.moveTo(0, 0);
-			ctx.quadraticCurveTo(bladeWidth * 0.3, -bladeLength * 0.40, bladeWidth, -bladeLength * 0.7);
+			ctx.quadraticCurveTo(bladeWidth * 0.3, -bladeLength * 0.40, arcStartX, arcStartY);
 			ctx.arc(0, 0, bladeLength, -Math.PI / 2 + bladeArc / 2, -Math.PI / 2 - bladeArc / 2, true);
 			ctx.quadraticCurveTo(-bladeWidth * 0.3, -bladeLength * 0.40, 0, 0);
 			ctx.closePath();
 			ctx.fillStyle = color;
-			ctx.shadowColor = '#fff';
-			ctx.shadowBlur = 8;
+			ctx.shadowColor = 'rgba(34,211,238,0.45)';
+			ctx.shadowBlur = 10;
 			ctx.fill();
+			ctx.lineWidth = 1.2;
+			ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+			ctx.stroke();
 			ctx.restore();
 		}
 
@@ -457,8 +469,8 @@ return view.extend({
 		ctx.beginPath();
 		ctx.arc(cx, cy, 18, 0, 2 * Math.PI);
 		ctx.fillStyle = '#e0e0e0';
-		ctx.shadowBlur = 3;
-		ctx.shadowColor = '#444';
+		ctx.shadowBlur = 4;
+		ctx.shadowColor = 'rgba(0,0,0,0.25)';
 		ctx.fill();
 		ctx.restore();
 
