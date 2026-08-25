@@ -417,7 +417,8 @@ fn restart_service() -> Result<()> {
 }
 
 fn cmd_hwdetect() {
-    if let Some(s) = emmc_sectors() {
+    let emmc = emmc_sectors();
+    if let Some(s) = emmc {
         println!(
             "emmc_sectors={s}\nemmc_gb={}",
             (s * 512 + 500_000_000) / 1_000_000_000
@@ -427,9 +428,13 @@ fn cmd_hwdetect() {
     }
     println!(
         "hw_pwm={}",
-        pwm_path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "none".into())
+        if emmc.is_some_and(|sectors| sectors > EMMC_THRESHOLD) {
+            None
+        } else {
+            pwm_path()
+        }
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "none".into())
     );
     println!(
         "pwmchip={}",
