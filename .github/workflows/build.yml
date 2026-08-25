@@ -22,19 +22,6 @@ env:
   SUBTARGET: filogic
   PKG_ARCH: aarch64_cortex-a53
 
-# 三个 SDK 变体定义，供 build-rust / build 两个矩阵 job 复用（YAML anchor）
-x-sdk-include: &sdk-include
-  - version: 'OpenWrt 24.10.8'
-    sdk_url: 'https://downloads.openwrt.org/releases/24.10.8/targets/mediatek/filogic/openwrt-sdk-24.10.8-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst'
-    tag: 'ipk'
-  - version: 'OpenWrt 25.12.5'
-    sdk_url: 'https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
-    tag: 'apk'
-  # immortalwrt master 快照 SDK(当前为 kernel 6.18),用于验证最新内核适配
-  - version: 'ImmortalWrt master'
-    sdk_url: ''
-    tag: 'immortalwrt-master'
-
 jobs:
   # 独立构建 Rust host 工具链（rustc + cargo）。
   # luci-app-airpi-fancontrol 的 Makefile 声明 PKG_BUILD_DEPENDS:=rust/host，
@@ -47,7 +34,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: *sdk-include
+        include:
+          - version: 'OpenWrt 24.10.8'
+            sdk_url: 'https://downloads.openwrt.org/releases/24.10.8/targets/mediatek/filogic/openwrt-sdk-24.10.8-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst'
+            tag: 'ipk'
+          - version: 'OpenWrt 25.12.5'
+            sdk_url: 'https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
+            tag: 'apk'
+          # immortalwrt master 快照 SDK(当前为 kernel 6.18),用于验证最新内核适配
+          - version: 'ImmortalWrt master'
+            sdk_url: ''
+            tag: 'immortalwrt-master'
 
     steps:
       - name: 安装编译依赖
@@ -149,7 +146,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: *sdk-include
+        include:
+          - version: 'OpenWrt 24.10.8'
+            sdk_url: 'https://downloads.openwrt.org/releases/24.10.8/targets/mediatek/filogic/openwrt-sdk-24.10.8-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst'
+            tag: 'ipk'
+          - version: 'OpenWrt 25.12.5'
+            sdk_url: 'https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
+            tag: 'apk'
+          # immortalwrt master 快照 SDK(当前为 kernel 6.18),用于验证最新内核适配
+          - version: 'ImmortalWrt master'
+            sdk_url: ''
+            tag: 'immortalwrt-master'
 
     steps:
       - name: 检出源码
