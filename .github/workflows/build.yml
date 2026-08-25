@@ -164,6 +164,11 @@ jobs:
         with:
           path: pkgsrc
 
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
       - name: 安装编译依赖
         run: |
           sudo apt-get update
@@ -190,6 +195,16 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/sdk"
           tar --zstd -xf sdk.tar.zst -C "$GITHUB_WORKSPACE/sdk" --strip-components=1
           rm -f sdk.tar.zst
+
+      - name: 预编译 Rust 用户态程序
+        working-directory: pkgsrc/luci-app-airpi-fancontrol/src
+        run: |
+          set -euxo pipefail
+          LINKER=$(find "$GITHUB_WORKSPACE/sdk/staging_dir" -type f -name '*-gcc' -perm -111 | head -1)
+          [ -n "$LINKER" ] || { echo "::error::未找到 OpenWrt 目标交叉链接器"; exit 1; }
+          mkdir -p "$HOME/.cargo"
+          printf '[target.aarch64-unknown-linux-musl]\nlinker = "%s"\n' "$LINKER" > "$HOME/.cargo/config.toml"
+          cargo build --locked --release --target aarch64-unknown-linux-musl
 
       - name: 更新并安装 feeds
         working-directory: sdk
@@ -235,7 +250,9 @@ jobs:
 
       - name: 编译 luci-app-airpi-fancontrol
         working-directory: sdk
-        run: make package/luci-app-airpi-fancontrol/compile V=s -j$(nproc)
+        run: make package/luci-app-airpi-fancontrol/compile V=s -j$(nproc) \
+          AIRPI_PREBUILT=1 \
+          AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"
 
       - name: 编译 kmod-airpi-gpio-fan
         working-directory: sdk

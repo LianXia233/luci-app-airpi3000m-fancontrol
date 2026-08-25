@@ -25,11 +25,17 @@ PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community
 PKG_LICENSE:=GPL-2.0-only
-PKG_BUILD_DEPENDS:=rust/host
 PKG_BUILD_PARALLEL:=1
 
+ifneq ($(AIRPI_PREBUILT),1)
+  PKG_BUILD_DEPENDS:=rust/host
+endif
+
 include $(INCLUDE_DIR)/package.mk
-include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk
+
+ifneq ($(AIRPI_PREBUILT),1)
+  include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk
+endif
 
 MAKE_PATH:=.
 
@@ -38,7 +44,7 @@ define Package/$(PKG_NAME)
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=LuCI support for AirPi AP3000M fan control
-  DEPENDS:=$(RUST_ARCH_DEPENDS) +luci-base +kmod-hwmon-pwmfan
+  DEPENDS:=$(if $(filter 1,$(AIRPI_PREBUILT)),,$(RUST_ARCH_DEPENDS)) +luci-base +kmod-hwmon-pwmfan
   URL:=https://github.com/LianXia233/luci-app-airpi3000m-fancontrol
 endef
 
@@ -59,9 +65,16 @@ define Build/Prepare
 	$(CP) ./src/Cargo.toml ./src/Cargo.lock ./src/src $(PKG_BUILD_DIR)/
 endef
 
-define Build/Compile
+ifeq ($(AIRPI_PREBUILT),1)
+  define Build/Compile
+	$(INSTALL_DIR) $(PKG_INSTALL_DIR)/bin
+	$(INSTALL_BIN) $(AIRPI_PREBUILT_BIN) $(PKG_INSTALL_DIR)/bin/airpi-fanctl
+  endef
+else
+  define Build/Compile
 	$(call Build/Compile/Cargo)
-endef
+  endef
+endif
 
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/etc/init.d
