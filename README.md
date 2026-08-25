@@ -46,7 +46,7 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 
 | 软件包 | 架构 | 说明 |
 | --- | --- | --- |
-| `luci-app-airpi-fancontrol` | `all` | LuCI 网页界面、温控守护进程、init 脚本 |
+| `luci-app-airpi-fancontrol` | `aarch64_cortex-a53` | LuCI 网页界面、Rust 温控守护进程、init 脚本 |
 | `kmod-airpi-gpio-fan` | `aarch64_cortex-a53` | GPIO 软件 PWM 内核驱动（仅软 PWM 模式需要） |
 
 依赖：`luci-base`、`kmod-hwmon-pwmfan`。
@@ -112,7 +112,7 @@ AP3000M 有两个硬件版本，闪存容量不同，支持的 PWM 方式也不�
 
 ### 智能温控曲线
 
-守护进程 `fancts.sh` 每 8 秒采样一次温度，按下表调整占空比：
+Rust 守护进程 `airpi-fanctl daemon` 每 8 秒采样一次温度，按下表调整占空比：
 
 | 温度区间 | 占空比 | 约合转速 |
 | --- | --- | --- |
@@ -123,7 +123,7 @@ AP3000M 有两个硬件版本，闪存容量不同，支持的 PWM 方式也不�
 
 ### 温度来源
 
-`fancts.sh` 每 8 秒同时采集以下多路温度，取最大值调速：
+`airpi-fanctl daemon` 每 8 秒同时采集以下多路温度，取最大值调速：
 
 1. **CPU**：`/sys/class/thermal/thermal_zone0/temp`
 2. **Wi-Fi 芯片**：MTK 驱动 `iwpriv ra0/rax0/rai0 stat`
@@ -273,9 +273,9 @@ ls /sys/kernel/duty_cycle          # sysfs 节点是否存在
 │   └── files/
 │       ├── etc/config/airpi-fan      UCI 配置
 │       ├── etc/init.d/airpi-fancontrol  服务脚本
-│       ├── usr/bin/airpi-fanctl.sh   JS 前端后端助手(rpcd exec)
-│       ├── usr/bin/fancts.sh         温控守护进程
-│       ├── usr/bin/get_sys_temp.sh   温度采集脚本
+│       ├── usr/bin/airpi-fanctl       Rust 控制工具与温控守护进程
+│       ├── usr/bin/airpi-fanctl.sh    LuCI/rpcd 兼容入口
+│       └── usr/bin/get_sys_temp.sh    旧命令兼容入口
 │       ├── usr/share/luci/menu.d/    LuCI 菜单注册
 │       └── usr/share/rpcd/acl.d/     RPCD 访问控制声明
 ├── CHANGELOG.md                      更新日志

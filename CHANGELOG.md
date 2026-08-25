@@ -2,6 +2,17 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [5.0.0] - 2026-08-25
+
+### 变更
+
+- 将 `fancts.sh`、温度采集和 LuCI 后端控制合并为无第三方 crate 依赖的 Rust 二进制 `airpi-fanctl`
+- 保留 `/usr/bin/airpi-fanctl.sh` 与 `/usr/bin/get_sys_temp.sh` 兼容入口，LuCI ACL 和现有命令调用无需迁移
+- 统一温度源、驱动选择和 PWM 写入逻辑，自动温控始终按可用传感器最高温度调速
+- 修复手动调速与 procd 守护进程竞争及模组温度误解析问题；保留 AP3000M 专用 pwmchip 0..255 占空比接口
+- 为转速、模式、GPIO、PWM 周期和驱动配置增加严格范围校验
+- LuCI 包改为目标架构包，并通过 OpenWrt packages feed 的 Rust 工具链交叉编译
+
 ## [4.2.1] - 2026-08-10
 
 ### 修复

@@ -14,26 +14,31 @@
 # Deliberately built on plain package.mk instead of luci.mk so that the
 # repository can be dropped into any OpenWrt/ImmortalWrt SDK's package/
 # directory without requiring the LuCI feed build system (luci.mk).
+# The Rust helper is built with the packages feed rust-package.mk.
 #
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-airpi-fancontrol
-PKG_VERSION:=4.2.1
+PKG_VERSION:=5.0.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community
 PKG_LICENSE:=GPL-2.0-only
+PKG_BUILD_DEPENDS:=rust/host
+PKG_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/package.mk
+include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk
+
+MAKE_PATH:=.
 
 define Package/$(PKG_NAME)
   SECTION:=luci
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=LuCI support for AirPi AP3000M fan control
-  PKGARCH:=all
-  DEPENDS:=+luci-base +kmod-hwmon-pwmfan
+  DEPENDS:=$(RUST_ARCH_DEPENDS) +luci-base +kmod-hwmon-pwmfan
   URL:=https://github.com/LianXia233/luci-app-airpi3000m-fancontrol
 endef
 
@@ -50,12 +55,12 @@ define Package/$(PKG_NAME)/conffiles
 endef
 
 define Build/Prepare
-endef
-
-define Build/Configure
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)
+	$(CP) ./src/Cargo.toml ./src/Cargo.lock ./src/src $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
+	$(call Build/Compile/Cargo)
 endef
 
 define Package/$(PKG_NAME)/install
@@ -66,8 +71,8 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_CONF) ./files/etc/config/airpi-fan $(1)/etc/config/airpi-fan
 
 	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/bin/airpi-fanctl $(1)/usr/bin/airpi-fanctl
 	$(INSTALL_BIN) ./files/usr/bin/airpi-fanctl.sh $(1)/usr/bin/airpi-fanctl.sh
-	$(INSTALL_BIN) ./files/usr/bin/fancts.sh $(1)/usr/bin/fancts.sh
 	$(INSTALL_BIN) ./files/usr/bin/get_sys_temp.sh $(1)/usr/bin/get_sys_temp.sh
 
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d

@@ -43,7 +43,7 @@ load_softpwm_driver() {
 
     printMsg "soft-PWM driver loaded (GPIO=$gpio, period=$freq us)"
 
-    # 立即写入初始占空比让风扇转起来，不等fancts.sh首轮循环
+    # 立即写入初始占空比让风扇转起来，不等 Rust 守护进程首轮循环
     sleep 1
     [ -w "$DUTY_PATH" ] && echo 64 > "$DUTY_PATH" 2>/dev/null
 }
@@ -55,6 +55,11 @@ find_pwm_path() {
         case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
             pwmfan|pwm-fan) echo "$pwm"; return 0 ;;
         esac
+    done
+    # AP3000M MT7981 hardware PWM fallback. Its exported interface accepts
+    # the same 0..255 values used by the LuCI controls.
+    for duty in /sys/class/pwm/pwmchip*/pwm*/duty_cycle; do
+        [ -w "$duty" ] && { echo "$duty"; return 0; }
     done
     return 1
 }
@@ -94,7 +99,7 @@ start_service() {
     fi
 
     procd_open_instance
-    procd_set_param command /usr/bin/fancts.sh smart
+    procd_set_param command /usr/bin/airpi-fanctl daemon
     procd_set_param respawn 3600 1 5
     procd_close_instance
 
