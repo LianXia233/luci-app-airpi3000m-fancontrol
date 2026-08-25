@@ -23,125 +23,10 @@ env:
   PKG_ARCH: aarch64_cortex-a53
 
 jobs:
-  # 独立构建 Rust host 工具链（rustc + cargo）。
-  # luci-app-airpi-fancontrol 的 Makefile 声明 PKG_BUILD_DEPENDS:=rust/host，
-  # 每次从零编译 rust 工具链需要 30-40 分钟，是整条流水线最大的耗时项。
-  # 拆分为独立 job 后：rust 构建失败可快速定位、产物可跨 run 缓存复用，
-  # 后续 run 直接从缓存恢复，编译总时长可降至 10 分钟以内。
-  build-rust:
-    name: 🔧 构建 Rust host 工具链 (${{ matrix.tag }})
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - version: 'OpenWrt 24.10.8'
-            sdk_url: 'https://downloads.openwrt.org/releases/24.10.8/targets/mediatek/filogic/openwrt-sdk-24.10.8-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst'
-            tag: 'ipk'
-          - version: 'OpenWrt 25.12.5'
-            sdk_url: 'https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
-            tag: 'apk'
-          # immortalwrt master 快照 SDK(当前为 kernel 6.18),用于验证最新内核适配
-          - version: 'ImmortalWrt master'
-            sdk_url: ''
-            tag: 'immortalwrt-master'
-
-    steps:
-      - name: 安装编译依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang flex bison g++ gawk gettext git bc \
-            libncurses-dev libssl-dev libelf-dev python3 python3-setuptools \
-            rsync swig unzip zlib1g-dev file wget zstd
-
-      # 解析 SDK 版本标识：release 用固定版本名，master 快照用 SDK 文件名（含日期），
-      # 作为缓存 key 的一部分，SDK 更新后 key 自然失效、自动重建。
-      - name: 解析 SDK 版本标识
-        id: sdkid
-        run: |
-          set -euxo pipefail
-          if [ -n "${{ matrix.sdk_url }}" ]; then
-            ID="${{ matrix.version }}"
-          else
-            BASE="https://downloads.immortalwrt.org/snapshots/targets/${TARGET}/${SUBTARGET}"
-            LISTING=$(wget -qO- "$BASE/")
-            ID=$(echo "$LISTING" | grep -oE 'immortalwrt-sdk-[^"]+\.Linux-x86_64\.tar\.zst' | head -1)
-            [ -n "$ID" ] || { echo "::error::无法从 $BASE 解析 SDK 文件名"; exit 1; }
-          fi
-          echo "id=${ID}" >> "$GITHUB_OUTPUT"
-
-      - name: 下载并解压 SDK
-        run: |
-          set -euxo pipefail
-          if [ -n "${{ matrix.sdk_url }}" ]; then
-            URL="${{ matrix.sdk_url }}"
-          else
-            BASE="https://downloads.immortalwrt.org/snapshots/targets/${TARGET}/${SUBTARGET}"
-            LISTING=$(wget -qO- "$BASE/")
-            SDK_FILE=$(echo "$LISTING" | grep -oE 'immortalwrt-sdk-[^"]+\.Linux-x86_64\.tar\.zst' | head -1)
-            URL="$BASE/$SDK_FILE"
-          fi
-          echo "SDK: $URL"
-          wget -q -O sdk.tar.zst "$URL"
-          mkdir -p "$GITHUB_WORKSPACE/sdk"
-          tar --zstd -xf sdk.tar.zst -C "$GITHUB_WORKSPACE/sdk" --strip-components=1
-          rm -f sdk.tar.zst
-
-      # 命中缓存则直接跳过 feeds / defconfig / rust 构建（stamp 一致时编译 job 也会跳过依赖重建）
-      - name: 恢复 Rust 工具链缓存
-        id: rustcache
-        uses: actions/cache/restore@v4
-        with:
-          path: sdk/staging_dir/host
-          key: rust-host-${{ matrix.tag }}-${{ steps.sdkid.outputs.id }}
-
-      - name: 更新并安装 feeds
-        if: steps.rustcache.outputs.cache-hit != 'true'
-        working-directory: sdk
-        run: |
-          set -euxo pipefail
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: 生成基础编译配置
-        if: steps.rustcache.outputs.cache-hit != 'true'
-        working-directory: sdk
-        run: |
-          set -euxo pipefail
-          make defconfig
-
-      - name: 构建 Rust host 工具链
-        if: steps.rustcache.outputs.cache-hit != 'true'
-        working-directory: sdk
-        run: make package/rust/host/compile V=s -j$(nproc)
-
-      - name: 保存 Rust 工具链缓存
-        if: steps.rustcache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: sdk/staging_dir/host
-          key: rust-host-${{ matrix.tag }}-${{ steps.sdkid.outputs.id }}
-
-      - name: 打包 Rust 工具链产物
-        working-directory: sdk
-        run: |
-          set -euxo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/rust-dist"
-          tar --zstd -cf "$GITHUB_WORKSPACE/rust-dist/rust-host-${{ matrix.tag }}.tar.zst" staging_dir/host
-          ls -lh "$GITHUB_WORKSPACE/rust-dist"
-
-      - name: 上传 Rust 工具链
-        uses: actions/upload-artifact@v4
-        with:
-          name: rust-host-${{ matrix.tag }}
-          path: rust-dist/*.tar.zst
-          retention-days: 7
-
-  # 注意：这里的 'build' 是系统识别的 Job ID，必须用英文，但界面会显示下方的 'name'
+  # Rust 程序由 runner 的 rustup 配合 SDK 交叉链接器直接编译，避免 OpenWrt
+  # 为每个矩阵目标从源码构建完整 LLVM/Rust host 工具链。
   build:
     name: 📦 编译 ${{ matrix.tag }} (${{ matrix.version }})
-    needs: build-rust
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -212,20 +97,6 @@ jobs:
           set -euxo pipefail
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-      - name: 下载 Rust 工具链
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-host-${{ matrix.tag }}
-          path: rust-dist
-
-      - name: 解压 Rust 工具链到 SDK
-        working-directory: sdk
-        run: |
-          set -euxo pipefail
-          tar --zstd -xf "$GITHUB_WORKSPACE/rust-dist/rust-host-${{ matrix.tag }}.tar.zst" -C "$GITHUB_WORKSPACE/sdk"
-          echo "----- rust 工具链已就位 -----"
-          ls "$GITHUB_WORKSPACE/sdk/staging_dir/host/bin" | grep -E '^(rustc|cargo|rustup)$' || echo "(未在 bin 下找到 rustc/cargo，交由 make 自动补齐)"
 
       - name: 链接本仓库软件包
         working-directory: sdk
@@ -337,7 +208,7 @@ jobs:
             echo
             echo "每种格式各含两个包："
             echo
-            echo "- \`luci-app-airpi-fancontrol\`：LuCI 网页控制界面与温控守护进程（架构 all）"
+            echo "- \`luci-app-airpi-fancontrol\`：LuCI 网页控制界面与 Rust 温控守护进程（架构 aarch64_cortex-a53）"
             echo "- \`kmod-airpi-gpio-fan\`：GPIO 软件 PWM 内核驱动（架构 aarch64_cortex-a53）"
             echo
             echo "> 自 v4.1.0 起内核模块不再强制匹配内核版本（包管理器层面已移除 \`kernel (=版本)\` 硬依赖），但仍需与本机内核 vermagic 一致才能加载；若仅用硬件 PWM 模式可不装内核模块。"
