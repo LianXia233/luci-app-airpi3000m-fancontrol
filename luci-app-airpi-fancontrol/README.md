@@ -49,7 +49,7 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 | `luci-app-airpi-fancontrol` | `aarch64_cortex-a53` | LuCI 网页界面、Rust 温控守护进程、init 脚本 |
 | `kmod-airpi-gpio-fan` | `aarch64_cortex-a53` | GPIO 软件 PWM 内核驱动（仅软 PWM 模式需要） |
 
-依赖：`luci-base`、`kmod-hwmon-pwmfan`。
+依赖：`luci-base`。硬件 PWM 使用固件提供的 `pwm-fan` 接口；软件 PWM 需要单独安装 `kmod-airpi-gpio-fan`。
 
 > v4.0.0 起前端为标准 JS 版 LuCI 应用（client-side view + rpcd exec 后端助手 `airpi-fanctl.sh`），不再需要 `luci-compat` / `luci-lua-runtime`。
 

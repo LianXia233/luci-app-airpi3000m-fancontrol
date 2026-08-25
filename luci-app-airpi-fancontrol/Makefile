@@ -44,7 +44,7 @@ define Package/$(PKG_NAME)
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=LuCI support for AirPi AP3000M fan control
-  DEPENDS:=$(if $(filter 1,$(AIRPI_PREBUILT)),,$(RUST_ARCH_DEPENDS)) +luci-base +kmod-hwmon-pwmfan
+  DEPENDS:=$(if $(filter 1,$(AIRPI_PREBUILT)),,$(RUST_ARCH_DEPENDS)) +luci-base
   URL:=https://github.com/LianXia233/luci-app-airpi3000m-fancontrol
 endef
 
