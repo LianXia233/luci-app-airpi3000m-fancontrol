@@ -9,7 +9,6 @@ use std::time::Duration;
 const DUTY_PATH: &str = "/sys/kernel/duty_cycle";
 const SPEED_FILE: &str = "/usr/bin/fanspeed.conf";
 const FANVAL_FILE: &str = "/etc/fanvall";
-const FANVALV_FILE: &str = "/etc/fanvallv.conf";
 const PID_FILE: &str = "/var/run/airpi-fancontrol.pid";
 const EMMC_FILE: &str = "/sys/block/mmcblk0/size";
 const EMMC_THRESHOLD: u64 = 25_000_000;
@@ -464,9 +463,8 @@ fn dispatch(args: &[String]) -> Result<()> {
         "status" => { cmd_status(); Ok(()) }, "temp" => { cmd_temp(); Ok(()) },
         "temps" => { cmd_temps(true); Ok(()) }, "legacy-temp" => { cmd_legacy_temp(args.get(2).map(String::as_str).unwrap_or("")); Ok(()) }, "set" => { let speed = parse_range(args.get(2).map(String::as_str).unwrap_or(""), 0, 255, "speed")?; let code = parse_range(args.get(3).map(String::as_str).unwrap_or(""), 0, 3, "mode")?; stop_service()?; write_value(FANVAL_FILE, code)?; write_pwm(speed)?; println!("result=ok"); Ok(()) },
         "auto" => { write_value(FANVAL_FILE, 9)?; restart_service()?; println!("result=ok"); Ok(()) }, "stepless" => { let speed = parse_range(args.get(2).map(String::as_str).unwrap_or(""), 0, 255, "speed")?; stop_service()?; write_value(FANVAL_FILE, 999)?; write_pwm(speed)?; println!("result=ok\nspeed={speed}"); Ok(()) },
-        "tempsrc" => { let source = args.get(2).map(String::as_str).unwrap_or("cpu"); if !matches!(source, "cpu" | "modem") { return Err("invalid temperature source".into()); } write_value(FANVAL_FILE, 9)?; write_value(FANVALV_FILE, if source == "modem" { "模组温度" } else { "CPU温度" })?; println!("result=ok"); Ok(()) },
         "hwdetect" => { cmd_hwdetect(); Ok(()) }, "reload" => { restart_service()?; println!("result=ok"); Ok(()) },
-        _ => Err("usage: airpi-fanctl {daemon|status|temp|temps|set <speed> <mode>|auto|stepless <speed>|tempsrc <cpu|modem>|hwdetect|reload}".into()),
+        _ => Err("usage: airpi-fanctl {daemon|status|temp|temps|legacy-temp <-a|-c|-s>|set <speed> <mode>|auto|stepless <speed>|hwdetect|reload}".into()),
     }
 }
 
