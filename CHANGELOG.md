@@ -2,6 +2,12 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 新增
+
+- **界面预览图**：新增 `docs/preview-fancontrol.png`（风扇控制状态页）与 `docs/preview-fan-settings.png`（风扇设置页）；README 新增「界面预览」章节引用两张截图，目录结构补充 `docs/` 目录
+
 ## [5.0.0] - 2026-08-25
 
 ### 变更
