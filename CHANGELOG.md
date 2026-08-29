@@ -6,7 +6,26 @@
 
 ### 新增
 
-- **界面预览图**：新增 `docs/preview-fancontrol.png`（风扇控制状态页）与 `docs/preview-fan-settings.png`（风扇设置页）；README 新增「界面预览」章节引用两张截图，目录结构补充 `docs/` 目录
+- **界面预览图**：新增 `docs/preview-fancontrol.png`（风扇控制状态页）与 `docs/preview-fan-settings.png`（风扇设置页）；README 新增「界面预览」章节引用两张截图
+- **硬件 PWM 探测路径**：README 补充硬件 PWM 接口的完整探测顺序（hwmon `pwm1` → MT7981 `pwmchip*/pwm*/duty_cycle`）与 eMMC 容量不可读时的回退规则
+- **温度采集细节**：补充读数有效区间 1–150 °C、模组温度单位换算规则、同名来源取最高值、Wi-Fi 仅取 `ra0`/`rax0`/`rai0` 中首个存在的接口
+- **构建开关**：补充 `AIRPI_PREBUILT=1` 打包预编译 Rust 二进制的用法
+- **目录结构**：补充 Rust 源码 `src/` 目录，修正 `files/usr/` 下 `bin` 与 `share` 的层级错位
+
+### 修正
+
+- **调速模式名称**：README 表格中的「常速 / 全速」更正为与 `fancontrol.js` 一致的「常规 / 狂暴」
+- **依赖说明**：补充遗漏的 `kmod-hwmon-pwmfan` 依赖
+- **温度源路径**：此前称 CPU 固定读 `thermal_zone0`、PHY 固定读 `hwmon1`，实际为动态扫描全部 thermal zone 与 hwmon 设备（排除 `pwmfan` / `pwm-fan` / `fan`），已更正
+- **停止行为**：`stop` 由笼统的「转速降到最低」更正为「硬件 PWM 降至 64，软件 PWM 写 0 停转」
+- **温控区间边界**：按 `temp > 阈值` 的实际判定，将曲线表更正为 `> 85` / `> 60 且 ≤ 85` / `> 50 且 ≤ 60` / `≤ 50`
+- **高亮配色**：最高温卡片高亮色由「蓝色」更正为「青色」（`--cy`，#22d3ee）
+- **转速读数**：明确状态页 RPM 为按占空比换算的估算值，风扇未引出测速引脚、无真实转速反馈
+- **`fan_enable` 选项**：标注为当前版本未被任何代码读取的占位项
+
+### 移除
+
+- 删除 `luci-app-airpi-fancontrol/README.md` 与 `luci-app-airpi-fancontrol/CHANGELOG.md`：子包内两份文档已与根目录长期不同步（子包 README 缺失界面预览与 CI 目标说明，子包 CHANGELOG 缺失整个 4.x 系列），统一以根目录文档为准。两个文件均未被 `Makefile` 的 `install` 段引用，删除不影响打包
 
 ## [5.0.0] - 2026-08-25
 
