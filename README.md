@@ -108,7 +108,7 @@ v5.0.0 起，温控调速、温度采集、驱动选择与 PWM 写入等核心�
 | `9` | 智能温控，按温度曲线循环调速 |
 | `999` | 无极调速 |
 
-> `tempsrc <cpu\|modem>` 会把温度源标签写入 `/etc/fanvallv.conf`，但该文件当前无任何代码读取，与 `fan_enable` 同属预留但未接线的配置项。
+温度源不做切换：智能模式固定为多源取最大值，由守护进程每轮循环自行裁决，无需也无法指定单一来源。
 
 ### 构建方式
 
@@ -260,7 +260,6 @@ config fan 'settings'
 	option fan_driver 'auto'      # auto | softpwm | pwm
 	option fan_gpio   '540'       # 软 PWM 使用的 GPIO 编号
 	option fan_freq   '15000'     # 软 PWM 周期，单位微秒
-	option fan_enable '1'         # 风扇总开关（当前版本未被代码读取，保留占位）
 ```
 
 该文件已登记为 conffile，升级插件时不会被覆盖。
