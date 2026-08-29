@@ -42,6 +42,22 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 
 ---
 
+## 界面预览
+
+### 状态页（状态 → 风扇控制）
+
+实时显示当前转速与驱动风扇的最高温度源读数，六档调速模式一键切换，底部温度条同步呈现 CPU / PHY / 模组 三路读数，最高温卡片蓝色高亮。
+
+![风扇控制状态页](docs/preview-fancontrol.png)
+
+### 设置页（状态 → 风扇设置）
+
+展示 eMMC 闪存版本与软硬件 PWM 驱动加载状态（含当前占空比），可手动覆盖「自动识别」所选的驱动模式、调整风扇 GPIO 与模拟 PWM 周期，修改后需先「保存并应用」再点击 **重新加载驱动** 才会生效。
+
+![风扇设置页](docs/preview-fan-settings.png)
+
+---
+
 ## 软件包组成
 
 | 软件包 | 架构 | 说明 |
@@ -278,6 +294,9 @@ ls /sys/kernel/duty_cycle          # sysfs 节点是否存在
 │       └── usr/bin/get_sys_temp.sh    旧命令兼容入口
 │       ├── usr/share/luci/menu.d/    LuCI 菜单注册
 │       └── usr/share/rpcd/acl.d/     RPCD 访问控制声明
+├── docs/                             界面预览图
+│   ├── preview-fancontrol.png        风扇控制状态页截图
+│   └── preview-fan-settings.png      风扇设置页截图
 ├── CHANGELOG.md                      更新日志
 └── LICENSE                           GPL-2.0
 ```
