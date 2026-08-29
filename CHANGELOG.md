@@ -11,6 +11,11 @@
 - **温度采集细节**：补充读数有效区间 1–150 °C、模组温度单位换算规则、同名来源取最高值、Wi-Fi 仅取 `ra0`/`rax0`/`rai0` 中首个存在的接口
 - **构建开关**：补充 `AIRPI_PREBUILT=1` 打包预编译 Rust 二进制的用法
 - **目录结构**：补充 Rust 源码 `src/` 目录，修正 `files/usr/` 下 `bin` 与 `share` 的层级错位
+- **Rust 守护进程章节**：新增 `airpi-fanctl` 专章，说明选用 Rust 的取舍（零第三方依赖、静态链接 musl、release 体积裁剪、内置单元测试）、11 个子命令的用法、`/etc/fanvall` 档位码映射、两种构建方式（SDK 交叉编译 / `AIRPI_PREBUILT` 打包，CI 采用后者以复用宿主 rustup）、本地开发命令，以及 `airpi-fanctl.sh` / `get_sys_temp.sh` 两个 shell 包装存在的 rpcd 授权原因
+
+### 已知问题
+
+- **配置项未接线**：`tempsrc <cpu|modem>` 子命令写入的 `/etc/fanvallv.conf`，与 UCI 的 `fan_enable` 选项一样，当前均无任何代码读取。两者属预留但未接线的遗留项，文档已标注，待后续版本决定实现或移除
 
 ### 修正
 
