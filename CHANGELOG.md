@@ -11,11 +11,7 @@
 - **温度采集细节**：补充读数有效区间 1–150 °C、模组温度单位换算规则、同名来源取最高值、Wi-Fi 仅取 `ra0`/`rax0`/`rai0` 中首个存在的接口
 - **构建开关**：补充 `AIRPI_PREBUILT=1` 打包预编译 Rust 二进制的用法
 - **目录结构**：补充 Rust 源码 `src/` 目录，修正 `files/usr/` 下 `bin` 与 `share` 的层级错位
-- **Rust 守护进程章节**：新增 `airpi-fanctl` 专章，说明选用 Rust 的取舍（零第三方依赖、静态链接 musl、release 体积裁剪、内置单元测试）、11 个子命令的用法、`/etc/fanvall` 档位码映射、两种构建方式（SDK 交叉编译 / `AIRPI_PREBUILT` 打包，CI 采用后者以复用宿主 rustup）、本地开发命令，以及 `airpi-fanctl.sh` / `get_sys_temp.sh` 两个 shell 包装存在的 rpcd 授权原因
-
-### 已知问题
-
-- **配置项未接线**：`tempsrc <cpu|modem>` 子命令写入的 `/etc/fanvallv.conf`，与 UCI 的 `fan_enable` 选项一样，当前均无任何代码读取。两者属预留但未接线的遗留项，文档已标注，待后续版本决定实现或移除
+- **Rust 守护进程章节**：新增 `airpi-fanctl` 专章，说明选用 Rust 的取舍（零第三方依赖、静态链接 musl、release 体积裁剪、内置单元测试）、10 个子命令的用法、`/etc/fanvall` 档位码映射、两种构建方式（SDK 交叉编译 / `AIRPI_PREBUILT` 打包，CI 采用后者以复用宿主 rustup）、本地开发命令，以及 `airpi-fanctl.sh` / `get_sys_temp.sh` 两个 shell 包装存在的 rpcd 授权原因
 
 ### 修正
 
@@ -26,10 +22,11 @@
 - **温控区间边界**：按 `temp > 阈值` 的实际判定，将曲线表更正为 `> 85` / `> 60 且 ≤ 85` / `> 50 且 ≤ 60` / `≤ 50`
 - **高亮配色**：最高温卡片高亮色由「蓝色」更正为「青色」（`--cy`，#22d3ee）
 - **转速读数**：明确状态页 RPM 为按占空比换算的估算值，风扇未引出测速引脚、无真实转速反馈
-- **`fan_enable` 选项**：标注为当前版本未被任何代码读取的占位项
 
 ### 移除
 
+- **`tempsrc <cpu|modem>` 子命令**：该子命令把温度源标签写入 `/etc/fanvallv.conf`，但该文件从无任何代码读取。v3.6.0 起「多源取最大值」已是唯一既定策略，温度源切换开关早已从 UI 移除，此子命令与 `FANVALV_FILE` 常量一并删除。`airpi-fanctl` 的用法提示同步更新（并补上此前遗漏的 `legacy-temp` 分支）
+- **UCI 选项 `fan_enable`**：自初始版本起即存在于 `/etc/config/airpi-fan` 且被 README 标注为「风扇总开关」，但全仓库无任何代码读取。作为会误导用户的占位项删除。注意：该文件是 conffile，升级时不会被覆盖，已安装设备上的残留选项无害
 - 删除 `luci-app-airpi-fancontrol/README.md` 与 `luci-app-airpi-fancontrol/CHANGELOG.md`：子包内两份文档已与根目录长期不同步（子包 README 缺失界面预览与 CI 目标说明，子包 CHANGELOG 缺失整个 4.x 系列），统一以根目录文档为准。两个文件均未被 `Makefile` 的 `install` 段引用，删除不影响打包
 
 ## [5.0.0] - 2026-08-25
