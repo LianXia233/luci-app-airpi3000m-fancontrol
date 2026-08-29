@@ -15,7 +15,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   TARGET: mediatek
@@ -23,8 +23,8 @@ env:
   PKG_ARCH: aarch64_cortex-a53
 
 jobs:
-  # Rust 程序由 runner 的 rustup 配合 SDK 交叉链接器直接编译，避免 OpenWrt
-  # 为每个矩阵目标从源码构建完整 LLVM/Rust host 工具链。
+  # 三个矩阵目标共享同一套流程。耗时大头原本是 SDK 下载解压与 feeds 的 git clone，
+  # 现按目标分别缓存；编译去掉 V=s 回到默认静默，避免输出 GB 级日志拖慢 IO。
   build:
     name: 📦 编译 ${{ matrix.tag }} (${{ matrix.version }})
     runs-on: ubuntu-24.04
@@ -44,10 +44,14 @@ jobs:
             tag: 'immortalwrt-master'
 
     steps:
+      - name: 记录开始时间
+        run: echo "BUILD_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: 检出源码
         uses: actions/checkout@v4
         with:
           path: pkgsrc
+          fetch-depth: 1
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -62,9 +66,14 @@ jobs:
             libncurses-dev libssl-dev libelf-dev python3 python3-setuptools \
             rsync swig unzip zlib1g-dev file wget zstd
 
-      - name: 下载并解压 SDK
+      - name: 计算 feeds 缓存时间桶
+        id: bucket
+        run: echo "week=$(date +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: 解析 SDK 下载地址
+        id: sdkurl
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           if [ -n "${{ matrix.sdk_url }}" ]; then
             URL="${{ matrix.sdk_url }}"
           else
@@ -75,11 +84,61 @@ jobs:
             [ -n "$SDK_FILE" ] || { echo "::error::无法从 $BASE 解析 SDK 文件名"; exit 1; }
             URL="$BASE/$SDK_FILE"
           fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "hash=$(printf '%s' "$URL" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "SDK: $URL"
-          wget -q -O sdk.tar.zst "$URL"
+
+      # SDK 解压后约 1-1.5GB,是单次运行最大的固定开销。缓存键取自下载地址,
+      # 固定版本 SDK 可长期命中,快照 SDK 换包时自动失效。
+      - name: 恢复 SDK 缓存
+        id: cache-sdk
+        uses: actions/cache/restore@v4
+        with:
+          path: sdk
+          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}
+
+      - name: 下载并解压 SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          wget -q -O sdk.tar.zst "${{ steps.sdkurl.outputs.url }}"
           mkdir -p "$GITHUB_WORKSPACE/sdk"
           tar --zstd -xf sdk.tar.zst -C "$GITHUB_WORKSPACE/sdk" --strip-components=1
           rm -f sdk.tar.zst
+
+      # 在 feeds 更新之前保存,保证缓存里是干净的 SDK,不含 feeds 与构建产物
+      - name: 保存 SDK 缓存
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: sdk
+          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}
+
+      - name: 恢复 feeds 缓存
+        id: cache-feeds
+        uses: actions/cache/restore@v4
+        with:
+          path: sdk/feeds
+          key: feeds-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.bucket.outputs.week }}
+
+      - name: 更新 feeds
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          # 只取 packages 与 luci:本项目仅依赖 luci-base 与内核自带模块,
+          # routing / telephony 与本项目无关,跳过可省下数百 MB 的 clone。
+          # 若某些 SDK 的 feed 命名不同,回退到全量更新。
+          if ! ./scripts/feeds update packages luci; then
+            echo "::warning::按名称更新失败,回退到 feeds update -a"
+            ./scripts/feeds update -a
+          fi
+
+      - name: 保存 feeds 缓存
+        if: steps.cache-feeds.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: sdk/feeds
+          key: feeds-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.bucket.outputs.week }}
 
       - name: 预编译 Rust 用户态程序
         working-directory: pkgsrc/luci-app-airpi-fancontrol/src
@@ -91,12 +150,9 @@ jobs:
           printf '[target.aarch64-unknown-linux-musl]\nlinker = "%s"\n' "$LINKER" > "$HOME/.cargo/config.toml"
           cargo build --locked --release --target aarch64-unknown-linux-musl
 
-      - name: 更新并安装 feeds
+      - name: 安装 feeds 中的软件包定义
         working-directory: sdk
-        run: |
-          set -euxo pipefail
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+        run: ./scripts/feeds install -a
 
       - name: 链接本仓库软件包
         working-directory: sdk
@@ -119,15 +175,21 @@ jobs:
           echo "----- 生效的相关配置 -----"
           grep -E 'airpi' .config || { echo "::error::软件包未出现在 .config 中，请检查 Makefile 依赖"; exit 1; }
 
+      # 去掉 V 参数即走 OpenWrt 默认静默模式。原先的 V=s 会打印每条命令,
+      # 单次运行可产生 GB 级日志,显著拖慢 IO 与日志上传。
+      # 注意:include/verbose.mk 以 "V 值是否含 s" 判断静默,
+      # 因此 V=sc 同样触发详细输出,不能用于精简日志(它其实是调试用的高详细级别)。
+      # 静默后失败细节改由下方"上传构建日志"保留。
       - name: 编译 luci-app-airpi-fancontrol
         working-directory: sdk
-        run: make package/luci-app-airpi-fancontrol/compile V=s -j$(nproc) \
-          AIRPI_PREBUILT=1 \
-          AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"
+        run: |
+          make package/luci-app-airpi-fancontrol/compile -j$(nproc) \
+            AIRPI_PREBUILT=1 \
+            AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"
 
       - name: 编译 kmod-airpi-gpio-fan
         working-directory: sdk
-        run: make package/airpi-gpio-fan/compile V=s -j$(nproc)
+        run: make package/airpi-gpio-fan/compile -j$(nproc)
 
       - name: 收集安装包
         working-directory: sdk
@@ -144,6 +206,15 @@ jobs:
             exit 1
           fi
 
+      - name: 上传构建日志（仅失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.tag }}
+          path: sdk/logs
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
@@ -151,6 +222,12 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
           retention-days: 30
+
+      - name: 输出构建耗时
+        if: always()
+        run: |
+          DUR=$(( $(date +%s) - ${BUILD_START:-$(date +%s)} ))
+          printf '📦 %s 本次耗时 %d 分 %d 秒\n' "${{ matrix.tag }}" $((DUR/60)) $((DUR%60))
 
   # 注意：这里的 'release' 也是系统识别的 Job ID，必须用英文
   release:
