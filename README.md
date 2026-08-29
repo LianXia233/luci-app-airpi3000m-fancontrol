@@ -71,6 +71,92 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 
 > v4.0.0 起前端为标准 JS 版 LuCI 应用（client-side view + rpcd exec 后端助手 `airpi-fanctl.sh`），不再需要 `luci-compat` / `luci-lua-runtime`。
 
+
+---
+
+## Rust 守护进程（airpi-fanctl）
+
+v5.0.0 起，温控调速、温度采集、驱动选择与 PWM 写入等核心逻辑统一由 Rust 二进制 `airpi-fanctl` 承担，取代此前分散在 shell 脚本中的实现。安装后位于 `/usr/bin/airpi-fanctl`。
+
+### 设计取舍
+
+- **零第三方依赖**：`Cargo.toml` 不含 `[dependencies]` 段，全部代码仅用标准库。没有 crates.io 供应链风险，交叉编译时也不必处理依赖的移植性
+- **静态链接 musl**：编译目标 `aarch64-unknown-linux-musl`，产物不依赖设备上的 libc 版本
+- **面向嵌入式裁剪体积**：release profile 启用 `opt-level = "z"`（最小体积）、`lto = true`、`codegen-units = 1`、`panic = "abort"`（不生成栈展开表）、`strip = true`（剥离符号）
+- **内置单元测试**：`main.rs` 含 `#[cfg(test)]` 模块，覆盖模组温度字段解析与参数范围校验
+
+### 子命令
+
+| 子命令 | 说明 |
+| --- | --- |
+| `daemon` | 温控守护主循环，由 init 脚本交给 procd 托管 |
+| `status` | 输出转速、档位码、模式、生效驱动与守护状态 |
+| `temp` | 输出最高温度 `temp=` 与来源标签 `source=` |
+| `temps` | 以 `key=value` 列出全部可用温度源 |
+| `set <转速> <档位>` | 手动档位，先停服务再写档位码与占空比（转速 0–255，档位 0–3） |
+| `auto` | 切回智能温控，写档位码 9 并重启服务 |
+| `stepless <转速>` | 无极调速，写档位码 999（转速 0–255） |
+| `legacy-temp <-a\|-c\|-s>` | 兼容旧 `get_sys_temp.sh` 的调用形式 |
+| `hwdetect` | 输出 eMMC 容量、硬件 PWM 路径、pwmchip、软 PWM 加载状态、当前占空比与生效驱动 |
+| `reload` | 重启服务以重载驱动 |
+
+档位码写入 `/etc/fanvall`，守护进程每轮循环据此判断运行方式：
+
+| 档位码 | 含义 |
+| --- | --- |
+| `0` / `1` / `2` / `3` | 固定占空比 64 / 128 / 192 / 255（静音 / 低速 / 常规 / 狂暴） |
+| `9` | 智能温控，按温度曲线循环调速 |
+| `999` | 无极调速 |
+
+> `tempsrc <cpu\|modem>` 会把温度源标签写入 `/etc/fanvallv.conf`，但该文件当前无任何代码读取，与 `fan_enable` 同属预留但未接线的配置项。
+
+### 构建方式
+
+**① 由 OpenWrt SDK 交叉编译（默认）**
+
+需 feeds 中的 Rust 工具链：
+
+```sh
+./scripts/feeds update -a && ./scripts/feeds install -a
+make package/luci-app-airpi-fancontrol/compile V=s
+```
+
+**② 打包外部预编译产物**
+
+已在别处编译好 `airpi-fanctl` 时，可跳过 SDK 内的 Rust 构建直接打包：
+
+```sh
+make package/luci-app-airpi-fancontrol/compile V=s \
+  AIRPI_PREBUILT=1 AIRPI_PREBUILT_BIN=/path/to/airpi-fanctl
+```
+
+CI 采用方式 ②：先用 rustup 配合 SDK 的交叉链接器编译，再以 `AIRPI_PREBUILT=1` 交给 SDK 打包。这样三个矩阵目标就不必各自从源码构建完整的 LLVM/Rust 宿主工具链。
+
+### 本地开发
+
+```sh
+cd luci-app-airpi-fancontrol/src
+cargo test    # 运行内置单元测试
+```
+
+交叉编译需先指定 SDK 里的链接器（CI 中即从 `staging_dir` 查找 `*-gcc` 写入 `.cargo/config.toml`）：
+
+```sh
+cargo build --locked --release --target aarch64-unknown-linux-musl
+```
+
+`src/.gitignore` 已忽略 `target/`，构建产物不会入库。
+
+### 兼容入口
+
+LuCI 前端并不直接调用 Rust 二进制——rpcd ACL 仅授权执行 `/usr/bin/airpi-fanctl.sh`，因此保留两个 shell 包装：
+
+| 入口 | 实际行为 |
+| --- | --- |
+| `/usr/bin/airpi-fanctl.sh` | `exec /usr/bin/airpi-fanctl "$@"` |
+| `/usr/bin/get_sys_temp.sh` | `exec /usr/bin/airpi-fanctl legacy-temp "$1"`，仅接受 `-a` / `-c` / `-s` |
+
+这样既满足 rpcd 的授权粒度，也让既有脚本与命令行习惯无需迁移。
 ---
 
 ## 安装
@@ -227,7 +313,7 @@ CI 会同时用 OpenWrt 24.10.8、OpenWrt 25.12.5 与 ImmortalWrt master 快照 
 
 ### 通过 OpenWrt SDK 本地编译
 
-> 默认使用 packages feed 的 Rust 工具链交叉编译，需先 `./scripts/feeds install rust`。若已在别处编译好 `airpi-fanctl`，可用 `make package/luci-app-airpi-fancontrol/compile AIRPI_PREBUILT=1 AIRPI_PREBUILT_BIN=/path/to/airpi-fanctl` 直接打包，跳过 SDK 内的 Rust 构建。
+> LuCI 包内含 Rust 编写的守护进程，构建方式见 [Rust 守护进程（airpi-fanctl）](#rust-守护进程airpi-fanctl)。
 
 ```sh
 # 以 25.12.5 filogic SDK 为例
