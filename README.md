@@ -38,7 +38,7 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 - **四档手动调速**：静音 25% / 低速 50% / 常速 75% / 全速 100%
 - **无极调速**：滑块任意设定 0–255 占空比
 - **智能温控**：按温度曲线自动调速
-- **多温度源自动回退**：CPU / Wi-Fi / PHY / 模组 四路温度取最大值驱动风扇，状态页三列卡片实时展示，最高温源高亮
+- **多温度源自动回退**：CPU / Wi-Fi / PHY / 模组 四路温度动态发现并取最大值驱动风扇，状态页卡片网格实时展示，最高温源青色高亮
 
 ---
 
@@ -46,7 +46,9 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 
 ### 状态页（状态 → 风扇控制）
 
-实时显示当前转速与驱动风扇的最高温度源读数，六档调速模式一键切换，底部温度条同步呈现 CPU / PHY / 模组 三路读数，最高温卡片蓝色高亮。
+实时显示当前转速与驱动风扇的最高温度源读数，六档调速模式一键切换；底部温度条与温度卡片网格同步呈现 CPU / Wi-Fi / PHY / 模组 中可用的各路读数，最高温卡片青色高亮。
+
+> 状态页显示的 RPM 为按占空比换算的估算值（占空比值 × 10）。AP3000M 风扇未引出测速引脚，无法读取真实转速。
 
 ![风扇控制状态页](docs/preview-fancontrol.png)
 
@@ -65,7 +67,7 @@ OpenWrt 主线自 25.12 起已内置该设备支持。
 | `luci-app-airpi-fancontrol` | `aarch64_cortex-a53` | LuCI 网页界面、Rust 温控守护进程、init 脚本 |
 | `kmod-airpi-gpio-fan` | `aarch64_cortex-a53` | GPIO 软件 PWM 内核驱动（仅软 PWM 模式需要） |
 
-依赖：`luci-base`。硬件 PWM 使用固件提供的 `pwm-fan` 接口；软件 PWM 需要单独安装 `kmod-airpi-gpio-fan`。
+依赖：`luci-base`、`kmod-hwmon-pwmfan`。硬件 PWM 使用固件提供的 `pwm-fan`（hwmon）接口或 MT7981 PWM 控制器直接导出的 pwmchip 节点；软件 PWM 需要单独安装 `kmod-airpi-gpio-fan`。
 
 > v4.0.0 起前端为标准 JS 版 LuCI 应用（client-side view + rpcd exec 后端助手 `airpi-fanctl.sh`），不再需要 `luci-compat` / `luci-lua-runtime`。
 
@@ -106,6 +108,11 @@ AP3000M 有两个硬件版本，闪存容量不同，支持的 PWM 方式也不�
 | 16GB | 软件 PWM | 16GB 版本未引出硬件 PWM 引脚，仅支持 GPIO 软件 PWM |
 | 8GB | 硬件 PWM | 8GB 版本已连接 `pwm-fan` hwmon 接口 |
 
+若 `/sys/block/mmcblk0/size` 读取失败，则按硬件 PWM 接口探测结果回退：探测到可写接口走硬件 PWM，否则退回软件 PWM。硬件 PWM 接口按以下顺序探测，取第一个可写者：
+
+1. `/sys/class/hwmon/hwmon*/pwm1`（`name` 为 `pwmfan` 或 `pwm-fan`）
+2. `/sys/class/pwm/pwmchip*/pwm*/duty_cycle`（MT7981 内置 PWM 控制器直接导出，沿用 0–255 占空比语义）
+
 也可在 **状态 → 风扇设置** 中手动覆盖自动选择。选择软 PWM 后可继续配置：
 
 | 配置项 | 默认值 | 说明 |
@@ -121,8 +128,8 @@ AP3000M 有两个硬件版本，闪存容量不同，支持的 PWM 方式也不�
 | --- | --- | --- |
 | 静音 | 64 / 255（约 25%） | 最低转速 |
 | 低速 | 128 / 255（约 50%） | |
-| 常速 | 192 / 255（约 75%） | |
-| 全速 | 255 / 255（100%） | |
+| 常规 | 192 / 255（约 75%） | |
+| 狂暴 | 255 / 255（100%） | |
 | 无极 | 0–255 任意 | 滑块自定义 |
 | 智能 | 自动 | 按下方温度曲线自动调节 |
 
@@ -130,23 +137,31 @@ AP3000M 有两个硬件版本，闪存容量不同，支持的 PWM 方式也不�
 
 Rust 守护进程 `airpi-fanctl daemon` 每 8 秒采样一次温度，按下表调整占空比：
 
-| 温度区间 | 占空比 | 约合转速 |
+判定为严格大于阈值，实际区间如下：
+
+| 温度区间（°C） | 占空比 | 约合转速 |
 | --- | --- | --- |
-| > 85 °C | 255 | 100% |
-| 60 – 85 °C | 192 | 75% |
-| 50 – 60 °C | 128 | 50% |
-| ≤ 50 °C | 64 | 25% |
+| > 85 | 255 | 100% |
+| > 60 且 ≤ 85 | 192 | 75% |
+| > 50 且 ≤ 60 | 128 | 50% |
+| ≤ 50 | 64 | 25% |
 
 ### 温度来源
 
 `airpi-fanctl daemon` 每 8 秒同时采集以下多路温度，取最大值调速：
 
-1. **CPU**：`/sys/class/thermal/thermal_zone0/temp`
-2. **Wi-Fi 芯片**：MTK 驱动 `iwpriv ra0/rax0/rai0 stat`
-3. **网络 PHY**：`/sys/class/hwmon/hwmon1/temp1_input`
-4. **模组**：`ubus call modem_ctrl info` 读取 4G/5G 模组芯片温度
+| 来源 | 采集方式 |
+| --- | --- |
+| CPU | 遍历 `/sys/class/thermal/thermal_zone*/temp`，取全部 zone 中的最高值 |
+| Wi-Fi 芯片 | 对 `ra0` / `rax0` / `rai0` 中**首个存在**的接口执行 `iwpriv <dev> stat`，解析 `CurrentTemperature` |
+| 网络 PHY | 遍历 `/sys/class/hwmon/hwmon*/temp1_input`，跳过 `pwmfan` / `pwm-fan` / `fan` 类设备，取最高值 |
+| 模组 | `ubus call modem_ctrl info`，解析返回中的 `temperature` 字段 |
 
-状态页三列卡片实时显示各源读数，最高温卡片蓝色高亮。`get_sys_temp.sh -a` 可命令行查看全部温度。
+- 读数须落在 **1 – 150 °C** 区间内才被采纳，超出范围的异常值直接丢弃
+- 模组温度字段小于 1000 时按摄氏度解析并换算为毫摄氏度，否则按毫摄氏度直接使用
+- 同一来源存在多组读数时取最高值（例如多个 thermal zone、多个 hwmon）
+
+状态页温度卡片网格以三列布局展示各可用来源读数，最高温卡片青色高亮。`get_sys_temp.sh -a`（等价于 `airpi-fanctl temps`）可命令行查看全部温度；`get_sys_temp.sh -s` 输出最高温的数值与来源标签。
 
 ---
 
@@ -159,7 +174,7 @@ config fan 'settings'
 	option fan_driver 'auto'      # auto | softpwm | pwm
 	option fan_gpio   '540'       # 软 PWM 使用的 GPIO 编号
 	option fan_freq   '15000'     # 软 PWM 周期，单位微秒
-	option fan_enable '1'         # 风扇总开关
+	option fan_enable '1'         # 风扇总开关（当前版本未被代码读取，保留占位）
 ```
 
 该文件已登记为 conffile，升级插件时不会被覆盖。
@@ -168,7 +183,7 @@ config fan 'settings'
 
 ```sh
 /etc/init.d/airpi-fancontrol start     # 启动
-/etc/init.d/airpi-fancontrol stop      # 停止（并将转速降到最低）
+/etc/init.d/airpi-fancontrol stop      # 停止（硬件 PWM 降至 64；软件 PWM 写 0 停转）
 /etc/init.d/airpi-fancontrol restart   # 重启
 /etc/init.d/airpi-fancontrol enable    # 开机自启
 ```
@@ -211,6 +226,8 @@ CI 会同时用 OpenWrt 24.10.8、OpenWrt 25.12.5 与 ImmortalWrt master 快照 
 也可在 Actions 页面手动运行 **编译与发布**，填入发布标签即可创建 Release；留空则仅上传构建产物。
 
 ### 通过 OpenWrt SDK 本地编译
+
+> 默认使用 packages feed 的 Rust 工具链交叉编译，需先 `./scripts/feeds install rust`。若已在别处编译好 `airpi-fanctl`，可用 `make package/luci-app-airpi-fancontrol/compile AIRPI_PREBUILT=1 AIRPI_PREBUILT_BIN=/path/to/airpi-fanctl` 直接打包，跳过 SDK 内的 Rust 构建。
 
 ```sh
 # 以 25.12.5 filogic SDK 为例
@@ -263,7 +280,7 @@ ls /sys/kernel/duty_cycle          # sysfs 节点是否存在
 
 **温度一直显示 null**
 
-说明所有温度源都读不到有效值。手动执行 `/usr/bin/get_sys_temp.sh -s` 查看返回的数值与来源标签进行排查。
+说明所有温度源都读不到有效值。注意只有落在 **1 – 150 °C** 区间的读数才会被采纳，返回 0、负数或明显超量程的传感器会被直接忽略。手动执行 `/usr/bin/get_sys_temp.sh -s` 查看最高温的数值与来源标签，或 `get_sys_temp.sh -a` 列出全部可用来源进行排查。
 
 **风扇不转 / 一直全速**
 
@@ -283,17 +300,22 @@ ls /sys/kernel/duty_cycle          # sysfs 节点是否存在
 │       └── airpi-gpio-fan.c          驱动源码
 ├── luci-app-airpi-fancontrol/        LuCI 应用(JS 版)
 │   ├── Makefile                      OpenWrt 软件包定义
+│   ├── src/                          Rust 守护进程源码
+│   │   ├── Cargo.toml                构建定义（无第三方 crate 依赖）
+│   │   ├── Cargo.lock                依赖锁定
+│   │   └── src/main.rs               airpi-fanctl 实现
 │   ├── htdocs/luci-static/resources/view/airpi-fancontrol/
 │   │   ├── fancontrol.js             风扇控制台视图(状态页)
 │   │   └── settings.js               风扇设置视图
 │   └── files/
 │       ├── etc/config/airpi-fan      UCI 配置
 │       ├── etc/init.d/airpi-fancontrol  服务脚本
-│       ├── usr/bin/airpi-fanctl       Rust 控制工具与温控守护进程
-│       ├── usr/bin/airpi-fanctl.sh    LuCI/rpcd 兼容入口
-│       └── usr/bin/get_sys_temp.sh    旧命令兼容入口
-│       ├── usr/share/luci/menu.d/    LuCI 菜单注册
-│       └── usr/share/rpcd/acl.d/     RPCD 访问控制声明
+│       └── usr/
+│           ├── bin/airpi-fanctl      Rust 控制工具与温控守护进程
+│           ├── bin/airpi-fanctl.sh   LuCI/rpcd 兼容入口
+│           ├── bin/get_sys_temp.sh   旧命令兼容入口
+│           ├── share/luci/menu.d/    LuCI 菜单注册
+│           └── share/rpcd/acl.d/     RPCD 访问控制声明
 ├── docs/                             界面预览图
 │   ├── preview-fancontrol.png        风扇控制状态页截图
 │   └── preview-fan-settings.png      风扇设置页截图
