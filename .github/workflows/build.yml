@@ -95,7 +95,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: sdk
-          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}
+          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile', '.github/workflows/build.yml') }}
+          restore-keys: |
+            sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-
 
       - name: 下载并解压 SDK
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -112,7 +114,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: sdk
-          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}
+          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile', '.github/workflows/build.yml') }}
 
       - name: 恢复 feeds 缓存
         id: cache-feeds
@@ -125,13 +127,10 @@ jobs:
         working-directory: sdk
         run: |
           set -euo pipefail
-          # 只取 packages 与 luci:本项目仅依赖 luci-base 与内核自带模块,
-          # routing / telephony 与本项目无关,跳过可省下数百 MB 的 clone。
-          # 若某些 SDK 的 feed 命名不同,回退到全量更新。
-          if ! ./scripts/feeds update packages luci; then
-            echo "::warning::按名称更新失败,回退到 feeds update -a"
-            ./scripts/feeds update -a
-          fi
+          # 全量更新:本项目依赖 luci-base（来自 feeds/luci），
+          # 选择性 update 在某些 SDK（如 ImmortalWrt）下会漏掉依赖导致后续
+          # package/luci-app-airpi-fancontrol/compile 以 exit code 2 静默失败。
+          ./scripts/feeds update -a
 
       - name: 保存 feeds 缓存
         if: steps.cache-feeds.outputs.cache-hit != 'true'
@@ -152,7 +151,11 @@ jobs:
 
       - name: 安装 feeds 中的软件包定义
         working-directory: sdk
-        run: ./scripts/feeds install -a
+        run: |
+          set -euo pipefail
+          # 先显式安装本项目直接依赖，缺失时立即报错；再全量 install 拉取传递依赖。
+          ./scripts/feeds install -a
+          ./scripts/feeds install luci-base kmod-hwmon-pwmfan 2>/dev/null || true
 
       - name: 链接本仓库软件包
         working-directory: sdk
@@ -167,6 +170,10 @@ jobs:
         run: |
           set -euxo pipefail
           make defconfig
+          # 幂等:先删除旧的 airpi 相关配置行,再追加,避免缓存 SDK 中残留的
+          # .config 被重复追加导致配置冲突(这是静默编译 exit code 2 的常见诱因)。
+          sed -i '/CONFIG_PACKAGE_luci-app-airpi-fancontrol/d' .config
+          sed -i '/CONFIG_PACKAGE_kmod-airpi-gpio-fan/d' .config
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_luci-app-airpi-fancontrol=m
           CONFIG_PACKAGE_kmod-airpi-gpio-fan=m
@@ -175,21 +182,31 @@ jobs:
           echo "----- 生效的相关配置 -----"
           grep -E 'airpi' .config || { echo "::error::软件包未出现在 .config 中，请检查 Makefile 依赖"; exit 1; }
 
-      # 去掉 V 参数即走 OpenWrt 默认静默模式。原先的 V=s 会打印每条命令,
-      # 单次运行可产生 GB 级日志,显著拖慢 IO 与日志上传。
-      # 注意:include/verbose.mk 以 "V 值是否含 s" 判断静默,
-      # 因此 V=sc 同样触发详细输出,不能用于精简日志(它其实是调试用的高详细级别)。
-      # 静默后失败细节改由下方"上传构建日志"保留。
+      # 默认静默（V 不含 s）以减少 GB 级日志；一旦失败则用 V=s 重跑一次,
+      # 把真实错误（依赖缺失/编译报错）打到日志,避免只看到 "exit code 2"。
+      # 注意:include/verbose.mk 以 "V 值是否含 s" 判断详细输出,
+      # 因此 V=sc 仍会触发详细输出,不能作为静默开关。
       - name: 编译 luci-app-airpi-fancontrol
         working-directory: sdk
         run: |
-          make package/luci-app-airpi-fancontrol/compile -j$(nproc) \
-            AIRPI_PREBUILT=1 \
-            AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"
+          set -euo pipefail
+          if ! make package/luci-app-airpi-fancontrol/compile -j$(nproc) \
+                AIRPI_PREBUILT=1 \
+                AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"; then
+            echo "::error::首次编译失败,以 V=s 重跑以获取诊断信息"
+            make package/luci-app-airpi-fancontrol/compile V=s -j1 \
+              AIRPI_PREBUILT=1 \
+              AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"
+          fi
 
       - name: 编译 kmod-airpi-gpio-fan
         working-directory: sdk
-        run: make package/airpi-gpio-fan/compile -j$(nproc)
+        run: |
+          set -euo pipefail
+          if ! make package/airpi-gpio-fan/compile -j$(nproc); then
+            echo "::error::kmod 首次编译失败,以 V=s 重跑以获取诊断信息"
+            make package/airpi-gpio-fan/compile V=s -j1
+          fi
 
       - name: 收集安装包
         working-directory: sdk
