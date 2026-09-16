@@ -410,6 +410,14 @@ ls /sys/kernel/duty_cycle          # sysfs 节点是否存在
 
 ---
 
+## 致谢
+
+本项目的源码与后续修改均基于 **Manper** 大佬的分享而来。在此基础之上，本项目针对 AirPi AP3000M 的软/硬件 PWM 驱动、多路温度源采集与 LuCI 前端做了适配与重构。
+
+感谢 Manper 大佬的开源分享。
+
+---
+
 ## 许可证
 
 本项目采用 [GPL-2.0-only](LICENSE) 许可证。

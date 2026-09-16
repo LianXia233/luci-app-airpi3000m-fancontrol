@@ -12,6 +12,7 @@
 - **构建开关**：补充 `AIRPI_PREBUILT=1` 打包预编译 Rust 二进制的用法
 - **目录结构**：补充 Rust 源码 `src/` 目录，修正 `files/usr/` 下 `bin` 与 `share` 的层级错位
 - **Rust 守护进程章节**：新增 `airpi-fanctl` 专章，说明选用 Rust 的取舍（零第三方依赖、静态链接 musl、release 体积裁剪、内置单元测试）、10 个子命令的用法、`/etc/fanvall` 档位码映射、两种构建方式（SDK 交叉编译 / `AIRPI_PREBUILT` 打包，CI 采用后者以复用宿主 rustup）、本地开发命令，以及 `airpi-fanctl.sh` / `get_sys_temp.sh` 两个 shell 包装存在的 rpcd 授权原因
+- **致谢**：README 新增「致谢」章节，说明本项目的源码与后续修改均基于 Manper 大佬的分享而来
 
 ### 修正
 
