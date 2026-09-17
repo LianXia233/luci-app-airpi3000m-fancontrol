@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=airpi-gpio-fan
-PKG_VERSION:=3.4.0
+PKG_VERSION:=4.0.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community
@@ -24,8 +24,11 @@ define KernelPackage/airpi-gpio-fan
   # 不强制匹配内核版本：默认 KernelPackage 会自动注入
   #   EXTRA_DEPENDS:=kernel (=版本~vermagic-r发布)
   # 把该项清空后，opkg/apk 不再因为内核版本号不同而拒绝安装。
-  # 注意：模块仍带有 vermagic，加载时由 kmodloader 校验，
-  #       因此请用与本机内核 vermagic 一致的 SDK 编译（CI 已按 immortalwrt master 实测）。
+  #
+  # 注意：这只解除包管理器层面的版本校验。模块本身仍带 vermagic，
+  #       加载时由 kmodloader 校验，且若内核启用了 CONFIG_MODVERSIONS
+  #       还会校验符号 CRC。因此必须使用与本机内核一致的 SDK 编译，
+  #       "一个 .ko 通吃所有内核版本"不成立。
   EXTRA_DEPENDS:=
   FILES:=$(PKG_BUILD_DIR)/airpi-gpio-fan.ko
 endef
@@ -36,9 +39,14 @@ define KernelPackage/airpi-gpio-fan/description
   Creates /sys/kernel/duty_cycle to control fan speed (0-255).
   Module parameters:
     fangpio - GPIO pin driving the fan (default 540)
-    cycle   - maximum duty value (default 255)
+    cycle   - upper bound of the duty value (default 255)
     period  - PWM period in microseconds (default 15000)
-    fanen   - 1 = enabled, 0 = force output LOW
+    fanen   - 1 = enabled, 0 = output LOW and stop the timer
+
+  Kernel support: Linux 6.0 - 6.19, source level.  The driver probes
+  CONFIG_GPIOLIB_LEGACY to decide how the pin is claimed, so it builds and
+  loads both on kernels that still provide the legacy integer GPIO API and on
+  kernels where it has been disabled (6.17+).
 endef
 
 define Build/Prepare

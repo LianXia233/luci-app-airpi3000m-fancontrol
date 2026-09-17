@@ -14,6 +14,30 @@
 - **Rust 守护进程章节**：新增 `airpi-fanctl` 专章，说明选用 Rust 的取舍（零第三方依赖、静态链接 musl、release 体积裁剪、内置单元测试）、10 个子命令的用法、`/etc/fanvall` 档位码映射、两种构建方式（SDK 交叉编译 / `AIRPI_PREBUILT` 打包，CI 采用后者以复用宿主 rustup）、本地开发命令，以及 `airpi-fanctl.sh` / `get_sys_temp.sh` 两个 shell 包装存在的 rpcd 授权原因
 - **致谢**：README 新增「致谢」章节，说明本项目的源码与后续修改均基于 Manper 大佬的分享而来
 
+### 变更
+
+- **kmod-airpi-gpio-fan 4.0.0：重写引脚申请路径，消除对 legacy GPIO 接口的单点依赖**
+  - 此前实现虽然按内核版本在 `gpiod_*` 与整数 API 之间分支，但**始终用 `gpio_request()` 按编号占用引脚**。该接口自内核 6.17 起由新增的 `CONFIG_GPIOLIB_LEGACY` 门控，开关一旦关闭（`gpiolib-legacy.o` 不再编入内核），模块会以 `Unknown symbol gpio_request` 加载失败
+  - 改为按**能力探测**而非版本号判断：`IS_ENABLED(CONFIG_GPIOLIB_LEGACY) || < 6.17` 走整数接口；6.17+ 且开关关闭时改走描述符路径 —— 用 `gpio_to_desc()` 定位所属 GPIO 控制器，经 `gpio_device_get_label()` / `gpio_device_get_base()` 换算出片内偏移，再由 `gpiod_add_lookup_table()` 绑定到驱动自带的 platform device（`platform_device_register_full()`），最后用 `gpiod_get_index()` 正式申请引脚。既不需要改设备树，也保留了 gpiolib 的引脚所有权保护
+  - 移除了原实现中 `LINUX_VERSION_CODE >= KERNEL_VERSION(6,14,0)` 这一**无 API 依据的伪分界**（6.14 未变更任何 GPIO 消费者接口），并把版本相关条件编译收敛到 3 处，主逻辑零分支
+  - 加载日志明确打印所走的路径与实际申请的引脚位置（控制器名 + 片内偏移），便于现场排障
+- **修正占空比无法达到 100%**：原实现把时间片序号直接与占空比原值比较，255 个高电平片落在 256 片周期里，实际上限为 255/256（99.6%）。现改为把 `duty_cycle` 线性映射到固定的 256 片分辨率，写入 `cycle` 即为真正的持续高电平
+- **`cycle` 参数语义自洽化**：原实现中 `PWM_TICKS` 固定为 256 而 `cycle` 可配置，二者并存时相互矛盾（例如 `cycle=100` 时仍有 155/256 的周期恒为低电平）。现在 `cycle` 只决定用户可见的值域上限，内部时间片分辨率恒为 256
+- **消除定时器周期漂移**：`hrtimer_forward(timer, ktime_get(), ...)` 改为 `hrtimer_forward_now()`，以定时器自身的到期时间前推下一周期，不再把每次软中断的执行延迟累积成周期误差
+- **消除并发数据竞争**：`duty_cycle_val` / `fanen` / `period` 的读取统一改为 `READ_ONCE()`、写入改为 `WRITE_ONCE()`；PWM 时间片计数器由函数内的 `static` 变量移入驱动实例结构体，为将来多风扇支持留出余地
+- **`fanen` 改为带回调的参数**：由 `module_param_cb()` 接管，写 0 时立即输出低电平并 `hrtimer_cancel()` 停表（原实现是每个周期唤醒一次并持续空转），写 1 时重新起表
+- **极端占空比不再占用定时器**：写入 0 或 `cycle` 时直接停表并输出恒定电平，写入中间值后自动恢复，省去无意义的中断开销
+- **`fangpio` 降为只读参数**：原权限为 0644 但仅在 `init` 中读取，运行时修改无任何效果，属误导性接口
+- **代码质量与错误处理**：`sysfs_emit()` 取代 `scnprintf()`；补齐初始化失败路径的资源回滚；`hrtimer` 改为单次初始化；移除 `-Wno-declaration-after-statement`（变量声明统一置于块首，恢复内核 C 风格）
+- **`/sys/kernel/duty_cycle` 路径保持不变**，LuCI 前端与既有脚本无需任何改动
+- **实机验证（AirPi AP3000M / ImmortalWrt SNAPSHOT / 内核 6.18.44）**：4.0.0 已完成加载、读写、卸载与资源清理的全流程实机验证
+  - 描述符路径实测通过：加载日志打印 `legacy GPIO path: no`，并正确由全局编号推导出 `chip pinctrl_moore hwnum 28`（540 − 512 = 28），与 `/sys/kernel/debug/pinctrl/*/pinmux-pins` 中 `pin 28 (SPI2_MISO): GPIO pinctrl_moore:540` 完全吻合
+  - legacy 路径同样实测通过：`legacy GPIO path: yes` 与 `GPIO 540 claimed through the legacy integer interface`
+  - 卸载验证通过：`rmmod` 返回 0，`/sys/kernel/duty_cycle` 被移除、GPIO 被释放，`/proc/modules` 中不再出现 `[permanent]` 标记
+  - **二次修正了"100% 占空比"修复自身的实现缺陷**：初版把写满占空比也交给停表路径处理，而停表固定输出低电平，导致写入 `cycle` 时风扇停转而非全速运转。现改为独立的"恒定电平"路径 —— 100% 输出持续高电平、0% 输出持续低电平，且两者都不再占用高分辨率定时器
+  - 参数回调（`fanen` 写 0 立即输出低电平并停表、写 1 重新起表）、超范围写入钳制（9999 → 255）、非数字写入拒绝，均实测符合预期
+- **补充编译约束说明**：实测确认产物除 vermagic 之外还须与目标内核的 `struct module` 布局一致，否则要么直接加载失败（`section size must match`），要么出现"能加载、能工作、但无法卸载"的 `[permanent]` 现象。README 增补了差异项对照表与自检命令（用 `readelf -SW/-rW` 核对 `this_module` 的段大小与重定位偏移）
+
 ### 修正
 
 - **调速模式名称**：README 表格中的「常速 / 全速」更正为与 `fancontrol.js` 一致的「常规 / 狂暴」

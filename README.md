@@ -181,6 +181,42 @@ opkg install ./luci-app-airpi-fancontrol_*.ipk ./kmod-airpi-gpio-fan_*.ipk
 
 > **内核模块不再强制匹配内核版本。** 自 v4.1.0 起，`kmod-airpi-gpio-fan` 已删除包管理器层面的 `kernel (=版本)` 硬依赖（Makefile 中 `EXTRA_DEPENDS` 已清空），opkg/apk 不再因内核版本号不同而拒绝安装。但模块仍带有 vermagic，加载时由 `kmodloader` 校验，请使用与本机内核 vermagic 一致的构建产物（CI 已用 immortalwrt master 快照实测）。若只使用硬件 PWM 模式，可以不装这个内核模块。
 
+> **内核接口兼容性（kmod-airpi-gpio-fan 4.0.0）。** 驱动源码适配 Linux 6.0 – 6.19，且刻意不使用内核版本号去猜测能力：引脚申请路径由 `IS_ENABLED(CONFIG_GPIOLIB_LEGACY)` 探测决定。
+>
+> `CONFIG_GPIOLIB_LEGACY` 是自内核 6.17 引入的配置项（默认开启）。它一旦被关闭，`gpio_request()` / `gpio_free()` 等 legacy 整数接口就不再编入内核。此时 4.0.0 驱动会自动改走描述符路径：由全局 GPIO 编号推导出所属 GPIO 控制器的名称与片内偏移，经 `gpiod_add_lookup_table()` 绑定到驱动自带的 platform device，再用 `gpiod_get_index()` 正式申请引脚。这条路不需要改动设备树，也不放弃 gpiolib 的引脚所有权保护。6.17 之前的内核没有该开关，legacy 接口恒可用，驱动直接使用它。
+>
+> 定时器部分同理：`hrtimer_init()` 于内核 6.15 被删除并由 `hrtimer_setup()` 取代，驱动按条件编译处理。除此之外的接口（`gpio_to_desc()`、`gpiod_set_value()`、`hrtimer_forward_now()` 等）在 6.x 全程稳定，主逻辑不含任何版本分支。
+>
+> 需要强调的是，这里的"兼容"是**源码级**的：模块必须使用与目标内核一致的 SDK 编译。`EXTRA_DEPENDS` 只解除了包管理器的版本校验，加载期 `kmodloader` 仍会校验 vermagic。
+
+> **编译产物还必须与目标内核的「配置」一致，而不只是 vermagic。** 这一点在 AirPi AP3000M 实机（ImmortalWrt SNAPSHOT / 内核 6.18.44）上验证过：
+>
+> 用官方 SDK 默认配置编译出的模块，vermagic 与设备内核逐字相同（`6.18.44 SMP mod_unload aarch64`），却仍被内核拒绝：
+>
+> ```
+> .gnu.linkonce.this_module section size must match the kernel's built struct module size at run time
+> ```
+>
+> 原因是 `struct module` 的布局由一系列 `CONFIG_*` 决定，而 vermagic 只反映内核版本与 SMP/preempt/mod_unload/arch/modversions，**不反映它们**。实测差异：
+>
+> | 配置项 | 官方 SDK 默认 | 该设备固件 | 影响 |
+> | --- | --- | --- | --- |
+> | `CONFIG_MODULES_TREE_LOOKUP` | y | n | `struct module` 大小 −384 字节 |
+> | `CONFIG_EVENT_TRACING` | y | n | −64 字节 |
+> | `CONFIG_DEBUG_INFO_BTF_MODULES` | y | n | −64 字节 |
+> | `CONFIG_BPF_EVENTS` | y | n | 使 `exit` 字段偏移后移 16 字节 |
+>
+> 最后一项最隐蔽：它**不改变结构体总大小**（前面几项的差异把总数抵消到恰好相同），但会让内核把 `mod->exit` 读成 NULL，模块被标记为 `[permanent]`，表现为**能加载、能工作，却无法 `rmmod`**（`/proc/modules` 中该列显示 `[permanent],` 而非 `-`）。
+>
+> 判断方法（在目标内核上，与任一可正常加载的模块对比）：
+>
+> ```sh
+> readelf -SW your.ko | grep this_module   # 期望 size = 0x2c0 (704)
+> readelf -rW your.ko | grep this_module   # 期望恰好 2 个重定位项: 0x138 与 0x298
+> ```
+>
+> 因此发布包应按目标固件的内核配置编译；直接用官方 SDK 默认配置构建的产物可能无法加载。
+
 ---
 
 ## 使用说明
@@ -281,10 +317,10 @@ insmod airpi-gpio-fan.ko fangpio=540 cycle=255 period=15000 fanen=1
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `fangpio` | 540 | 输出 PWM 的 GPIO 编号 |
-| `cycle` | 255 | 占空比最大值 |
-| `period` | 15000 | PWM 周期（微秒） |
-| `fanen` | 1 | 1 = 启用，0 = 强制输出低电平 |
+| `fangpio` | 540 | 输出 PWM 的 GPIO 编号，仅加载时读取（只读参数） |
+| `cycle` | 255 | `duty_cycle` 的取值上限（1–255），可运行时修改 |
+| `period` | 15000 | PWM 周期（微秒，256–1000000），可运行时修改 |
+| `fanen` | 1 | 1 = 运行 PWM，0 = 输出低电平并停止定时器，可运行时修改 |
 
 加载后通过 `/sys/kernel/duty_cycle` 直接控制转速：
 
@@ -292,6 +328,10 @@ insmod airpi-gpio-fan.ko fangpio=540 cycle=255 period=15000 fanen=1
 echo 128 > /sys/kernel/duty_cycle    # 设为 50%
 cat /sys/kernel/duty_cycle           # 读取当前值
 ```
+
+写入值到占空比的映射是**线性**的：`duty_cycle` 的值域为 `0..cycle`，内部按固定的 256 个时间片折算。因此写入 `cycle`（默认 255）得到的是持续高电平的真正 **100%** 占空比，写入 0 得到持续低电平；这两种极端值下驱动会直接停掉高分辨率定时器、不再产生周期性中断，写入中间值后自动恢复。`cycle` 只决定用户可见的值域上限，不改变 256 片的内部时间片分辨率 —— 例如 `cycle=100` 时写入 100 同样是 100% 占空比。
+
+定时器以定时器自身的到期时间为基准前推下一个周期（而非取当前时间），因此不会把每次软中断的执行延迟累积成周期漂移。`period` 与 `cycle` 若在运行时被改成越界值，驱动会按内部分辨率做钳制，不会出现除零或空转。
 
 ---
 
@@ -358,6 +398,20 @@ ls /sys/kernel/duty_cycle          # sysfs 节点是否存在
 ```
 
 最常见的原因是内核模块与当前内核版本不匹配，重新下载对应固件版本的包即可。
+
+若 `logread` 中出现 `Unknown symbol gpio_request`（或 `Unknown symbol gpio_free`），说明设备内核把 `CONFIG_GPIOLIB_LEGACY` 关掉了，而模块仍是 3.x 版本。换用 4.0.0 及以后的模块即可：该版本会在这种情况下自动切换到「描述符 + 查找表」的引脚申请路径。驱动加载日志会明确打印走的是哪条路径：
+
+```
+# 走传统整数接口（6.17 之前，或 6.17+ 但内核仍启用该开关）
+airpi_gpio_fan: loading v4.0.0 (legacy GPIO path: yes)
+airpi_gpio_fan: GPIO 540 claimed through the legacy integer interface
+
+# 走描述符查找表（6.17+ 且内核关闭了该开关）
+airpi_gpio_fan: loading v4.0.0 (legacy GPIO path: no)
+airpi_gpio_fan: GPIO 540 claimed by descriptor lookup on chip <控制器名> hwnum <片内偏移>
+```
+
+`logread | grep airpi_gpio_fan` 即可看到上述内容。
 
 **风扇有啸叫声**
 
