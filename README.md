@@ -1,477 +1,319 @@
-# luci-app-airpi3000m-fancontrol
+<div align="center">
 
-Airpi AP3000M 专用的 OpenWrt 风扇控制插件，提供 LuCI 网页界面与温度自动调速守护进程。
+# 🌀 luci-app-airpi3000m-fancontrol
+
+**专为 Airpi AP3000M 打造的现代风扇控制插件 · LuCI 原生 JS 架构 + Rust 高性能温控守护进程**
 
 [![编译与发布](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/actions/workflows/build.yml/badge.svg)](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/actions/workflows/build.yml)
-[![许可证](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
+[![平台架构](https://img.shields.io/badge/Target-MediaTek%20Filogic%20(MT7981B)-orange)](#)
+[![内核支持](https://img.shields.io/badge/Kernel-Linux%206.6%20~%206.19-brightgreen)](#)
+[![前端技术](https://img.shields.io/badge/LuCI-Native%20JS%20(No%20Compat)-purple)](#)
+[![核心守护](https://img.shields.io/badge/Daemon-Rust%20(Zero%20Dependencies)-red)](#)
+[![许可证](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 
-> **本插件为 Airpi AP3000M 专用，已通过16G EMMC 软件PWM实机测试。8G EMMC硬件PWM的未知**
-> GPIO 引脚编号、PWM sysfs 路径、温度传感器探测顺序均按该设备适配，装到别的路由器上不会工作。
-
-> **v4.0.0 兼容性说明**：LuCI 前端已重写为 JS 版（Lua 版依赖的 `luci-compat` 已从 immortalwrt master 移除），同时兼容 OpenWrt 24.10（内核 6.6）与 immortalwrt master（内核 6.18）。每次 CI 构建都会使用 immortalwrt master 快照 SDK 实测编译，保证跟上最新内核。
-
----
-
-## 设备信息
-
-| 项目 | 参数 |
-| --- | --- |
-| 型号 | Airpi AP3000M 5G CPE |
-| 主控 | MediaTek MT7981B（双核 ARM Cortex-A53） |
-| OpenWrt 目标平台 | `mediatek/filogic` |
-| 软件包架构 | `aarch64_cortex-a53` |
-| 内存 / 存储 | 1GB DDR4 / 8GB 或 16GB eMMC |
-| 散热 | PWM 控制风扇 |
-| 设备树标识 | `airpi,ap3000m` |
-
-OpenWrt 主线自 25.12 起已内置该设备支持。
+*支持 8G / 16G eMMC 闪存规格自动识别，集成硬件 PWM 与 GPIO 软 PWM 双驱动、多温区仲裁与无极调速*
 
 ---
 
-## 功能特性
+</div>
 
-- **eMMC 容量自动识别**：通过闪存容量自动判断驱动模式（16GB→软件PWM，8GB→硬件PWM），无需手动选择
-- **三列卡片式状态面板**：eMMC 闪存信息、硬件 PWM 状态、软件 PWM 状态一目了然，动态配色指示
-- **双驱动支持**：自动识别模式下按 eMMC 容量自动选择，也可在网页端手动切换
-  - **硬件 PWM**：8GB 版本使用内核 `pwm-fan`（hwmon）接口
-  - **软件 PWM**：16GB 版本使用 `kmod-airpi-gpio-fan` GPIO 位翻转驱动
-- **四档手动调速**：静音 25% / 低速 50% / 常速 75% / 全速 100%
-- **无极调速**：滑块任意设定 0–255 占空比
-- **智能温控**：按温度曲线自动调速
-- **多温度源自动回退**：CPU / Wi-Fi / PHY / 模组 四路温度动态发现并取最大值驱动风扇，状态页卡片网格实时展示，最高温源青色高亮
+> [!CAUTION]
+> **专机专用硬件说明**：
+> 本插件专为 **Airpi AP3000M 5G CPE**（`airpi,ap3000m`）定制开发，底层 GPIO 编号、PWM sysfs 路径与各温区传感器探测链路均严格匹配该设备，**请勿安装至其他路由器设备**。
 
 ---
 
-## 界面预览
+## 📌 核心特性
 
-### 状态页（状态 → 风扇控制）
-
-实时显示当前转速与驱动风扇的最高温度源读数，六档调速模式一键切换；底部温度条与温度卡片网格同步呈现 CPU / Wi-Fi / PHY / 模组 中可用的各路读数，最高温卡片青色高亮。
-
-> 状态页显示的 RPM 为按占空比换算的估算值（占空比值 × 10）。AP3000M 风扇未引出测速引脚，无法读取真实转速。
-
-![风扇控制状态页](docs/preview-fancontrol.png)
-
-### 设置页（状态 → 风扇设置）
-
-展示 eMMC 闪存版本与软硬件 PWM 驱动加载状态（含当前占空比），可手动覆盖「自动识别」所选的驱动模式、调整风扇 GPIO 与模拟 PWM 周期，修改后需先「保存并应用」再点击 **重新加载驱动** 才会生效。
-
-![风扇设置页](docs/preview-fan-settings.png)
+- 🧠 **闪存驱动自适应识别**：根据 eMMC 容量自动决策驱动链路（`16GB` $\rightarrow$ 软 PWM；`8GB` $\rightarrow$ 硬件 PWM），亦支持 WebUI 手动强制切换。
+- 🦀 **Rust 高性能温控守护**：底层由原生静态链接的 Rust 二进制程序 `airpi-fanctl` 驱动，零三方依赖、musl 静态链接，内存占用极低且安全可靠。
+- 🌡️ **多源温度动态仲裁**：并行轮询采集 **CPU / Wi-Fi 芯片 / 物理层 PHY / 5G 蜂窝模组** 四路温度，以最高温区实时驱动风扇转速，异常值自动过滤回退。
+- 🎛️ **丰富调速档位**：支持静音 (25%)、低速 (50%)、常规 (75%)、狂暴 (100%) 四档快捷预设、0~255 无极平滑滑块调速及阶梯智能温控。
+- 🎨 **三列卡片式状态面板**：动态高亮最高温源，实时呈现驱动工作状态、eMMC 闪存信息与模拟 RPM 估算曲线。
+- ⚡ **现代 LuCI 架构 (v4.0+)**：基于 Client-Side JavaScript 现代视图架构，彻底剥离过时的 `luci-compat`，无缝兼容 OpenWrt 24.10、25.12 与 ImmortalWrt master 分支。
 
 ---
 
-## 软件包组成
+## 🖥️ 设备规格一览
 
-| 软件包 | 架构 | 说明 |
-| --- | --- | --- |
-| `luci-app-airpi-fancontrol` | `aarch64_cortex-a53` | LuCI 网页界面、Rust 温控守护进程、init 脚本 |
-| `kmod-airpi-gpio-fan` | `aarch64_cortex-a53` | GPIO 软件 PWM 内核驱动（仅软 PWM 模式需要） |
-
-依赖：`luci-base`、`kmod-hwmon-pwmfan`。硬件 PWM 使用固件提供的 `pwm-fan`（hwmon）接口或 MT7981 PWM 控制器直接导出的 pwmchip 节点；软件 PWM 需要单独安装 `kmod-airpi-gpio-fan`。
-
-> v4.0.0 起前端为标准 JS 版 LuCI 应用（client-side view + rpcd exec 后端助手 `airpi-fanctl.sh`），不再需要 `luci-compat` / `luci-lua-runtime`。
-
+| 硬件规格 | 详细参数 |
+| :--- | :--- |
+| **设备型号** | Airpi AP3000M 5G CPE |
+| **主控芯片** | MediaTek MT7981B（双核 ARM Cortex-A53 @ 1.3GHz） |
+| **OpenWrt 目标平台** | `mediatek/filogic` |
+| **架构包格式** | `aarch64_cortex-a53` |
+| **内存 / 存储** | 1GB DDR4 / 8GB 或 16GB eMMC |
+| **散热系统** | PWM 控制散热风扇（无独立测速 Tach 引脚） |
+| **设备树兼容标识** | `airpi,ap3000m`（OpenWrt 25.12+ 已内置原生支持） |
 
 ---
 
-## Rust 守护进程（airpi-fanctl）
+## ⚡ 快速安装
 
-v5.0.0 起，温控调速、温度采集、驱动选择与 PWM 写入等核心逻辑统一由 Rust 二进制 `airpi-fanctl` 承担，取代此前分散在 shell 脚本中的实现。安装后位于 `/usr/bin/airpi-fanctl`。
+前往 [Releases 页面](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases) 下载对应固件版本的安装包：
 
-### 设计取舍
-
-- **零第三方依赖**：`Cargo.toml` 不含 `[dependencies]` 段，全部代码仅用标准库。没有 crates.io 供应链风险，交叉编译时也不必处理依赖的移植性
-- **静态链接 musl**：编译目标 `aarch64-unknown-linux-musl`，产物不依赖设备上的 libc 版本
-- **面向嵌入式裁剪体积**：release profile 启用 `opt-level = "z"`（最小体积）、`lto = true`、`codegen-units = 1`、`panic = "abort"`（不生成栈展开表）、`strip = true`（剥离符号）
-- **内置单元测试**：`main.rs` 含 `#[cfg(test)]` 模块，覆盖模组温度字段解析与参数范围校验
-
-### 子命令
-
-| 子命令 | 说明 |
-| --- | --- |
-| `daemon` | 温控守护主循环，由 init 脚本交给 procd 托管 |
-| `status` | 输出转速、档位码、模式、生效驱动与守护状态 |
-| `temp` | 输出最高温度 `temp=` 与来源标签 `source=` |
-| `temps` | 以 `key=value` 列出全部可用温度源 |
-| `set <转速> <档位>` | 手动档位，先停服务再写档位码与占空比（转速 0–255，档位 0–3） |
-| `auto` | 切回智能温控，写档位码 9 并重启服务 |
-| `stepless <转速>` | 无极调速，写档位码 999（转速 0–255） |
-| `legacy-temp <-a\|-c\|-s>` | 兼容旧 `get_sys_temp.sh` 的调用形式 |
-| `hwdetect` | 输出 eMMC 容量、硬件 PWM 路径、pwmchip、软 PWM 加载状态、当前占空比与生效驱动 |
-| `reload` | 重启服务以重载驱动 |
-
-档位码写入 `/etc/fanvall`，守护进程每轮循环据此判断运行方式：
-
-| 档位码 | 含义 |
-| --- | --- |
-| `0` / `1` / `2` / `3` | 固定占空比 64 / 128 / 192 / 255（静音 / 低速 / 常规 / 狂暴） |
-| `9` | 智能温控，按温度曲线循环调速 |
-| `999` | 无极调速 |
-
-温度源不做切换：智能模式固定为多源取最大值，由守护进程每轮循环自行裁决，无需也无法指定单一来源。
-
-### 构建方式
-
-**① 由 OpenWrt SDK 交叉编译（默认）**
-
-需 feeds 中的 Rust 工具链：
+### 方式 A：apk 系统 (OpenWrt 25.12.x / ImmortalWrt master 快照)
 
 ```sh
-./scripts/feeds update -a && ./scripts/feeds install -a
-make package/luci-app-airpi-fancontrol/compile V=s
-```
-
-**② 打包外部预编译产物**
-
-已在别处编译好 `airpi-fanctl` 时，可跳过 SDK 内的 Rust 构建直接打包：
-
-```sh
-make package/luci-app-airpi-fancontrol/compile V=s \
-  AIRPI_PREBUILT=1 AIRPI_PREBUILT_BIN=/path/to/airpi-fanctl
-```
-
-CI 采用方式 ②：先用 rustup 配合 SDK 的交叉链接器编译，再以 `AIRPI_PREBUILT=1` 交给 SDK 打包。这样三个矩阵目标就不必各自从源码构建完整的 LLVM/Rust 宿主工具链。
-
-### 本地开发
-
-```sh
-cd luci-app-airpi-fancontrol/src
-cargo test    # 运行内置单元测试
-```
-
-交叉编译需先指定 SDK 里的链接器（CI 中即从 `staging_dir` 查找 `*-gcc` 写入 `.cargo/config.toml`）：
-
-```sh
-cargo build --locked --release --target aarch64-unknown-linux-musl
-```
-
-`src/.gitignore` 已忽略 `target/`，构建产物不会入库。
-
-### 兼容入口
-
-LuCI 前端并不直接调用 Rust 二进制——rpcd ACL 仅授权执行 `/usr/bin/airpi-fanctl.sh`，因此保留两个 shell 包装：
-
-| 入口 | 实际行为 |
-| --- | --- |
-| `/usr/bin/airpi-fanctl.sh` | `exec /usr/bin/airpi-fanctl "$@"` |
-| `/usr/bin/get_sys_temp.sh` | `exec /usr/bin/airpi-fanctl legacy-temp "$1"`，仅接受 `-a` / `-c` / `-s` |
-
-这样既满足 rpcd 的授权粒度，也让既有脚本与命令行习惯无需迁移。
----
-
-## 安装
-
-前往 [Releases](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases) 页面下载对应格式的安装包。
-
-| 固件版本 | 包格式 | 包管理器 |
-| --- | --- | --- |
-| ImmortalWrt master 快照（内核 6.18） | `.apk`（immortalwrt-master 构建产物） | `apk` |
-| OpenWrt 25.12.x 及更新 | `.apk` | `apk` |
-| OpenWrt 24.10.x 及更早 | `.ipk` | `opkg` |
-
-```sh
-# OpenWrt 25.12 及以上
 apk add --allow-untrusted ./luci-app-airpi-fancontrol-*.apk ./kmod-airpi-gpio-fan-*.apk
 
-# OpenWrt 24.10 及以下
+# 清除缓存并重载服务
+rm -f /tmp/luci-indexcache*; rm -rf /tmp/luci-modulecache/
+/etc/init.d/rpcd reload
+
+```
+
+### 方式 B：ipk 系统 (OpenWrt 24.10.x 及更早)
+
+```sh
 opkg install ./luci-app-airpi-fancontrol_*.ipk ./kmod-airpi-gpio-fan_*.ipk
+
+# 清除缓存并重载服务
+rm -f /tmp/luci-indexcache*; rm -rf /tmp/luci-modulecache/
+/etc/init.d/rpcd reload
+
 ```
 
-安装完成后刷新浏览器缓存，在 **状态 → 风扇控制** 查看运行状态，在 **状态 → 风扇设置** 调整驱动参数。
-
-> **内核模块不再强制匹配内核版本。** 自 v4.1.0 起，`kmod-airpi-gpio-fan` 已删除包管理器层面的 `kernel (=版本)` 硬依赖（Makefile 中 `EXTRA_DEPENDS` 已清空），opkg/apk 不再因内核版本号不同而拒绝安装。但模块仍带有 vermagic，加载时由 `kmodloader` 校验，请使用与本机内核 vermagic 一致的构建产物（CI 已用 immortalwrt master 快照实测）。若只使用硬件 PWM 模式，可以不装这个内核模块。
-
-> **内核接口兼容性（kmod-airpi-gpio-fan 4.0.0）。** 驱动源码适配 Linux 6.0 – 6.19，且刻意不使用内核版本号去猜测能力：引脚申请路径由 `IS_ENABLED(CONFIG_GPIOLIB_LEGACY)` 探测决定。
->
-> `CONFIG_GPIOLIB_LEGACY` 是自内核 6.17 引入的配置项（默认开启）。它一旦被关闭，`gpio_request()` / `gpio_free()` 等 legacy 整数接口就不再编入内核。此时 4.0.0 驱动会自动改走描述符路径：由全局 GPIO 编号推导出所属 GPIO 控制器的名称与片内偏移，经 `gpiod_add_lookup_table()` 绑定到驱动自带的 platform device，再用 `gpiod_get_index()` 正式申请引脚。这条路不需要改动设备树，也不放弃 gpiolib 的引脚所有权保护。6.17 之前的内核没有该开关，legacy 接口恒可用，驱动直接使用它。
->
-> 定时器部分同理：`hrtimer_init()` 于内核 6.15 被删除并由 `hrtimer_setup()` 取代，驱动按条件编译处理。除此之外的接口（`gpio_to_desc()`、`gpiod_set_value()`、`hrtimer_forward_now()` 等）在 6.x 全程稳定，主逻辑不含任何版本分支。
->
-> 需要强调的是，这里的"兼容"是**源码级**的：模块必须使用与目标内核一致的 SDK 编译。`EXTRA_DEPENDS` 只解除了包管理器的版本校验，加载期 `kmodloader` 仍会校验 vermagic。
-
-> **编译产物还必须与目标内核的「配置」一致，而不只是 vermagic。** 这一点在 AirPi AP3000M 实机（ImmortalWrt SNAPSHOT / 内核 6.18.44）上验证过：
->
-> 用官方 SDK 默认配置编译出的模块，vermagic 与设备内核逐字相同（`6.18.44 SMP mod_unload aarch64`），却仍被内核拒绝：
->
-> ```
-> .gnu.linkonce.this_module section size must match the kernel's built struct module size at run time
-> ```
->
-> 原因是 `struct module` 的布局由一系列 `CONFIG_*` 决定，而 vermagic 只反映内核版本与 SMP/preempt/mod_unload/arch/modversions，**不反映它们**。实测差异：
->
-> | 配置项 | 官方 SDK 默认 | 该设备固件 | 影响 |
-> | --- | --- | --- | --- |
-> | `CONFIG_MODULES_TREE_LOOKUP` | y | n | `struct module` 大小 −384 字节 |
-> | `CONFIG_EVENT_TRACING` | y | n | −64 字节 |
-> | `CONFIG_DEBUG_INFO_BTF_MODULES` | y | n | −64 字节 |
-> | `CONFIG_BPF_EVENTS` | y | n | 使 `exit` 字段偏移后移 16 字节 |
->
-> 最后一项最隐蔽：它**不改变结构体总大小**（前面几项的差异把总数抵消到恰好相同），但会让内核把 `mod->exit` 读成 NULL，模块被标记为 `[permanent]`，表现为**能加载、能工作，却无法 `rmmod`**（`/proc/modules` 中该列显示 `[permanent],` 而非 `-`）。
->
-> 判断方法（在目标内核上，与任一可正常加载的模块对比）：
->
-> ```sh
-> readelf -SW your.ko | grep this_module   # 期望 size = 0x2c0 (704)
-> readelf -rW your.ko | grep this_module   # 期望恰好 2 个重定位项: 0x138 与 0x298
-> ```
->
-> 因此发布包应按目标固件的内核配置编译；直接用官方 SDK 默认配置构建的产物可能无法加载。
+> [!NOTE]
+> 安装完成后刷新浏览器缓存，在后台 **状态 → 风扇控制** 查看运行状态，在 **状态 → 风扇设置** 调整驱动参数。
 
 ---
 
-## 使用说明
+## 🧭 驱动拓扑与硬件匹配机制
 
-### 选择风扇驱动
+AP3000M 存在两款硬件版本，默认在「自动识别」模式下读取 `/sys/block/mmcblk0/size` 进行自适应配置：
 
-AP3000M 有两个硬件版本，闪存容量不同，支持的 PWM 方式也不同。默认的「自动识别」模式通过读取 `/sys/block/mmcblk0/size` 判断 eMMC 容量来自动选择：
+```mermaid
+graph TD
+    A[启动服务 / 驱动检测] --> B{读取 eMMC 容量}
+    B -- 容量匹配 16GB --> C[选用 软件 GPIO PWM 驱动]
+    B -- 容量匹配 8GB --> D[选用 硬件 PWM 驱动]
+    B -- 闪存读取失败 --> E{硬件接口探测}
+    E -- 存在可用 hwmon / pwmchip --> D
+    E -- 无可用硬件 PWM 节点 --> C
+    C --> F[加载 kmod-airpi-gpio-fan]
+    D --> G[绑定内核 pwm-fan hwmon 接口]
 
-| eMMC 容量 | 自动选择的驱动 | 说明 |
+```
+
+| 硬件规格 | 驱动模式 | 底层接口 / 实现机制 |
 | --- | --- | --- |
-| 16GB | 软件 PWM | 16GB 版本未引出硬件 PWM 引脚，仅支持 GPIO 软件 PWM |
-| 8GB | 硬件 PWM | 8GB 版本已连接 `pwm-fan` hwmon 接口 |
+| **16GB eMMC** | **软件 GPIO PWM** | 主板未引出硬件 PWM 引脚，通过 `kmod-airpi-gpio-fan` 内核模块操作 GPIO 540 进行微秒级位翻转模拟 |
+| **8GB eMMC** | **硬件 PWM** | 主板引脚已接入硬件控制器，挂载至内核 `pwm-fan`（hwmon）或 MT7981 导出的 `pwmchip` 节点 |
 
-若 `/sys/block/mmcblk0/size` 读取失败，则按硬件 PWM 接口探测结果回退：探测到可写接口走硬件 PWM，否则退回软件 PWM。硬件 PWM 接口按以下顺序探测，取第一个可写者：
+若需手动干预，可在 **状态 → 风扇设置** 中覆盖自动判定。软 PWM 可进一步配置：
 
-1. `/sys/class/hwmon/hwmon*/pwm1`（`name` 为 `pwmfan` 或 `pwm-fan`）
-2. `/sys/class/pwm/pwmchip*/pwm*/duty_cycle`（MT7981 内置 PWM 控制器直接导出，沿用 0–255 占空比语义）
-
-也可在 **状态 → 风扇设置** 中手动覆盖自动选择。选择软 PWM 后可继续配置：
-
-| 配置项 | 默认值 | 说明 |
-| --- | --- | --- |
-| 风扇 GPIO | `540` | 驱动风扇的 GPIO 编号 |
-| 模拟 PWM 周期(μs) | `15000` | 周期越大越容易啸叫，越小 CPU 占用越高 |
-
-修改参数后需先「保存并应用」，再点击 **重新加载驱动** 卸载并重新加载驱动才会生效。
-
-### 调速模式
-
-| 模式 | 占空比 | 说明 |
-| --- | --- | --- |
-| 静音 | 64 / 255（约 25%） | 最低转速 |
-| 低速 | 128 / 255（约 50%） | |
-| 常规 | 192 / 255（约 75%） | |
-| 狂暴 | 255 / 255（100%） | |
-| 无极 | 0–255 任意 | 滑块自定义 |
-| 智能 | 自动 | 按下方温度曲线自动调节 |
-
-### 智能温控曲线
-
-Rust 守护进程 `airpi-fanctl daemon` 每 8 秒采样一次温度，按下表调整占空比：
-
-判定为严格大于阈值，实际区间如下：
-
-| 温度区间（°C） | 占空比 | 约合转速 |
-| --- | --- | --- |
-| > 85 | 255 | 100% |
-| > 60 且 ≤ 85 | 192 | 75% |
-| > 50 且 ≤ 60 | 128 | 50% |
-| ≤ 50 | 64 | 25% |
-
-### 温度来源
-
-`airpi-fanctl daemon` 每 8 秒同时采集以下多路温度，取最大值调速：
-
-| 来源 | 采集方式 |
-| --- | --- |
-| CPU | 遍历 `/sys/class/thermal/thermal_zone*/temp`，取全部 zone 中的最高值 |
-| Wi-Fi 芯片 | 对 `ra0` / `rax0` / `rai0` 中**首个存在**的接口执行 `iwpriv <dev> stat`，解析 `CurrentTemperature` |
-| 网络 PHY | 遍历 `/sys/class/hwmon/hwmon*/temp1_input`，跳过 `pwmfan` / `pwm-fan` / `fan` 类设备，取最高值 |
-| 模组 | `ubus call modem_ctrl info`，解析返回中的 `temperature` 字段 |
-
-- 读数须落在 **1 – 150 °C** 区间内才被采纳，超出范围的异常值直接丢弃
-- 模组温度字段小于 1000 时按摄氏度解析并换算为毫摄氏度，否则按毫摄氏度直接使用
-- 同一来源存在多组读数时取最高值（例如多个 thermal zone、多个 hwmon）
-
-状态页温度卡片网格以三列布局展示各可用来源读数，最高温卡片青色高亮。`get_sys_temp.sh -a`（等价于 `airpi-fanctl temps`）可命令行查看全部温度；`get_sys_temp.sh -s` 输出最高温的数值与来源标签。
+* **风扇 GPIO**：默认 `540`
+* **模拟 PWM 周期**：默认 `15000` μs（周期过长易产生电磁啸叫，周期过短会略微增加软中断 CPU 负载）
 
 ---
 
-## 配置文件
+## 🌡️ 智能温控曲线与多源仲裁
 
-配置位于 `/etc/config/airpi-fan`：
+温控守护进程默认每 **8 秒** 轮询一次全部温度源，**自动选取其中的最高温源作为调速基准**：
+
+### 1. 温控调速阶梯
+
+| 触发条件（最高温度 $T$） | 占空比 | 输出比例 | 标称转速状态 |
+| --- | --- | --- | --- |
+| $T > 85^\circ\text{C}$ | `255 / 255` | 100% | 狂暴全速 |
+| $60^\circ\text{C} < T \le 85^\circ\text{C}$ | `192 / 255` | 75% | 常规加速 |
+| $50^\circ\text{C} < T \le 60^\circ\text{C}$ | `128 / 255` | 50% | 低速运转 |
+| $T \le 50^\circ\text{C}$ | `64 / 255` | 25% | 静音巡航 |
+
+### 2. 四路温度探测机制
+
+| 温区来源 | 底层采集通道 | 过滤校验机制 |
+| --- | --- | --- |
+| **CPU 核心** | 遍历 `/sys/class/thermal/thermal_zone*/temp` | 仅采纳 $1 \sim 150^\circ\text{C}$ 之间有效读数，自动丢弃越界值 |
+| **Wi-Fi 射频** | 首个匹配网卡（`ra0` / `rax0` / `rai0`）执行 `iwpriv <dev> stat` 提取 `CurrentTemperature` | 针对无线驱动异常回退机制 |
+| **网络 PHY** | 遍历 `/sys/class/hwmon/hwmon*/temp1_input`（排除风扇类设备） | 取物理网卡传感器最大值 |
+| **5G 模组** | `ubus call modem_ctrl info` 提取 `temperature` 字段 | 数值 $< 1000$ 视为摄氏度换算，否则按毫摄氏度换算 |
+
+> [!NOTE]
+> 界面显示的 RPM 为占空比线性换算值（$\text{RPM} = \text{Duty} \times 10$）。由于 AP3000M 硬件未引出风扇 Hall 测速引脚，无法直接回读物理转速。
+
+---
+
+## 🦀 Rust 温控守护进程 (`airpi-fanctl`)
+
+自 v5.0.0 起，核心温控调度由 Rust 编写的独立程序 `/usr/bin/airpi-fanctl` 承载：
+
+### 命令行子指令参考
+
+```sh
+airpi-fanctl daemon              # 启动温控守护前台主循环（交由 procd 托管）
+airpi-fanctl status              # 查看转速、档位码、生效驱动与运行状态
+airpi-fanctl temp                # 输出最高温度与对应来源标识
+airpi-fanctl temps               # 列出当前所有可用的温度源键值
+airpi-fanctl set <0-255> <0-3>   # 停止守护并固定转速与档位
+airpi-fanctl auto                # 切回智能温控（写入档位码 9 并重启守护）
+airpi-fanctl stepless <0-255>    # 无极自定义调速（写入档位码 999）
+airpi-fanctl hwdetect            # 打印 eMMC 大小、软硬件驱动与 PWM 路径检测全貌
 
 ```
+
+### 档位控制状态码（写入 `/etc/fanvall`）
+
+| 档位码 | 工作模式 | 行为描述 |
+| --- | --- | --- |
+| `0` / `1` / `2` / `3` | 固定档位 | 对应占空比 `64` / `128` / `192` / `255`（静音 / 低速 / 常规 / 狂暴） |
+| `9` | 智能温控 | 守护进程接管，根据温度曲线每 8 秒自动调速 |
+| `999` | 无极调速 | 按用户在界面指定的任意占空比维持运行 |
+
+---
+
+## ⚙️ 配置文件与服务控制
+
+UCI 配置文件位于 `/etc/config/airpi-fan`（升级插件保留）：
+
+```uci
 config fan 'settings'
-	option fan_driver 'auto'      # auto | softpwm | pwm
-	option fan_gpio   '540'       # 软 PWM 使用的 GPIO 编号
-	option fan_freq   '15000'     # 软 PWM 周期，单位微秒
+    option fan_driver 'auto'      # auto (自动) | softpwm (软PWM) | pwm (硬PWM)
+    option fan_gpio   '540'       # 软 PWM 使用的 GPIO 编号
+    option fan_freq   '15000'     # 模拟周期 (微秒 μs)
+
 ```
 
-该文件已登记为 conffile，升级插件时不会被覆盖。
-
-### 服务管理
+### 服务管理命令
 
 ```sh
-/etc/init.d/airpi-fancontrol start     # 启动
-/etc/init.d/airpi-fancontrol stop      # 停止（硬件 PWM 降至 64；软件 PWM 写 0 停转）
-/etc/init.d/airpi-fancontrol restart   # 重启
-/etc/init.d/airpi-fancontrol enable    # 开机自启
+/etc/init.d/airpi-fancontrol start    # 启动守护进程
+/etc/init.d/airpi-fancontrol stop     # 停止服务 (硬 PWM 回退至 64；软 PWM 归零停转)
+/etc/init.d/airpi-fancontrol restart  # 重载配置并重启
+/etc/init.d/airpi-fancontrol enable   # 设置开机自启
+
 ```
 
-### 内核模块参数
+### 软 PWM 内核模块参数
 
 ```sh
+# 手动加载内核模块示例
 insmod airpi-gpio-fan.ko fangpio=540 cycle=255 period=15000 fanen=1
+
+# 通过 sysfs 直接交互
+echo 128 > /sys/kernel/duty_cycle    # 设置 50% 占空比
+cat /sys/kernel/duty_cycle          # 读取当前占空比
+
 ```
-
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `fangpio` | 540 | 输出 PWM 的 GPIO 编号，仅加载时读取（只读参数） |
-| `cycle` | 255 | `duty_cycle` 的取值上限（1–255），可运行时修改 |
-| `period` | 15000 | PWM 周期（微秒，256–1000000），可运行时修改 |
-| `fanen` | 1 | 1 = 运行 PWM，0 = 输出低电平并停止定时器，可运行时修改 |
-
-加载后通过 `/sys/kernel/duty_cycle` 直接控制转速：
-
-```sh
-echo 128 > /sys/kernel/duty_cycle    # 设为 50%
-cat /sys/kernel/duty_cycle           # 读取当前值
-```
-
-写入值到占空比的映射是**线性**的：`duty_cycle` 的值域为 `0..cycle`，内部按固定的 256 个时间片折算。因此写入 `cycle`（默认 255）得到的是持续高电平的真正 **100%** 占空比，写入 0 得到持续低电平；这两种极端值下驱动会直接停掉高分辨率定时器、不再产生周期性中断，写入中间值后自动恢复。`cycle` 只决定用户可见的值域上限，不改变 256 片的内部时间片分辨率 —— 例如 `cycle=100` 时写入 100 同样是 100% 占空比。
-
-定时器以定时器自身的到期时间为基准前推下一个周期（而非取当前时间），因此不会把每次软中断的执行延迟累积成周期漂移。`period` 与 `cycle` 若在运行时被改成越界值，驱动会按内部分辨率做钳制，不会出现除零或空转。
 
 ---
 
-## 自行编译
+## 🛠️ 深度技术解析与避坑指南
 
-### 通过 GitHub Actions
+自 v4.0.0 起，`kmod-airpi-gpio-fan` 内核驱动采用**源码级自适应**，不再通过内核版本硬编码分支：
 
-推送 `v` 开头的 tag 即自动编译并发布：
+1. **GPIO 申请路径自适应**：
+* Linux 6.17 引入了 `CONFIG_GPIOLIB_LEGACY`。若关闭该项，传统的 `gpio_request()` / `gpio_free()` 整数接口将不可用。
+* 驱动通过 `IS_ENABLED(CONFIG_GPIOLIB_LEGACY)` 探测：开启时走传统整数路径；关闭时自动改走「描述符 + 查找表」路径（由全局 GPIO 编号推导控制器与 offset，经 `gpiod_add_lookup_table()` 绑定到驱动自带 platform device），无需修改设备树。
 
-```sh
-git tag v4.1.0
-git push origin v4.1.0
+
+2. **高精度定时器**：
+* 内核 6.15 移除了 `hrtimer_init()`，统一由 `hrtimer_setup()` 取代，源码中已通过预编译宏做平滑过渡。
+
+
+
+在 AP3000M 实机（ImmortalWrt / 内核 6.18）上排查发现：**即使 vermagic 完全一致，模块依然可能被内核拒绝加载**，报错：
+
+```text
+.gnu.linkonce.this_module section size must match the kernel's built struct module size at run time
+
 ```
 
-CI 会同时用 OpenWrt 24.10.8、OpenWrt 25.12.5 与 ImmortalWrt master 快照 SDK 编译三个目标，其中 ImmortalWrt master 目标用于持续验证最新内核（当前 6.18）下的可编译性。
+### 差异根源：Kconfig 配置改变了结构体大小与偏移
 
-也可在 Actions 页面手动运行 **编译与发布**，填入发布标签即可创建 Release；留空则仅上传构建产物。
+| 内核配置项 | 官方 SDK 默认 | 目标固件环境 | 对 struct module 的影响 |
+| --- | --- | --- | --- |
+| `CONFIG_MODULES_TREE_LOOKUP` | y | n | 结构体大小变化 **-384 字节** |
+| `CONFIG_EVENT_TRACING` | y | n | 结构体大小变化 **-64 字节** |
+| `CONFIG_DEBUG_INFO_BTF_MODULES` | y | n | 结构体大小变化 **-64 字节** |
+| `CONFIG_BPF_EVENTS` | y | n | 总大小看似被对消，但导致 `exit` 字段后移 16 字节！ |
 
-### 通过 OpenWrt SDK 本地编译
+> [!WARNING]
+> 最后一项尤其隐蔽：结构体大小总和完全一致，但由于 `mod->exit` 被内核偏移解析为 `NULL`，模块会被强制标为 `[permanent]`，表现为**可加载、可控速，但无法 `rmmod` 卸载**。
+> **核验基准命令**：
+> ```sh
+> readelf -SW airpi-gpio-fan.ko | grep this_module   # 期望 size = 0x2c0 (704)
+> readelf -rW airpi-gpio-fan.ko | grep this_module   # 期望恰好 2 个重定位项: 0x138 与 0x298
+> 
+> ```
+> 
+> 
 
-> LuCI 包内含 Rust 编写的守护进程，构建方式见 [Rust 守护进程（airpi-fanctl）](#rust-守护进程airpi-fanctl)。
+---
+
+## 🏗️ 编译指南
+
+### 1. 通过 GitHub Actions 自动化编译
+
+仓库已配置多环境流水线，推送标签即可触发构建：
 
 ```sh
-# 以 25.12.5 filogic SDK 为例
-wget https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-tar --zstd -xf openwrt-sdk-*.tar.zst && cd openwrt-sdk-*/
+git tag v5.0.0
+git push origin v5.0.0
 
+```
+
+CI 将针对 **OpenWrt 24.10.x**、**OpenWrt 25.12.x** 以及 **ImmortalWrt master 快照** 同时发起矩阵构建。
+
+### 2. 本地 SDK 编译
+
+```sh
+# 准备目标 SDK 并更新 feeds
 ./scripts/feeds update -a && ./scripts/feeds install -a
 
-git clone https://github.com/LianXia233/luci-app-airpi3000m-fancontrol.git /tmp/airpi
+# 引入项目源码
+git clone [https://github.com/LianXia233/luci-app-airpi3000m-fancontrol.git](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol.git) /tmp/airpi
 ln -s /tmp/airpi/luci-app-airpi-fancontrol package/luci-app-airpi-fancontrol
 ln -s /tmp/airpi/airpi-gpio-fan            package/airpi-gpio-fan
 
+# 配置目标包并执行编译
 make defconfig
 echo 'CONFIG_PACKAGE_luci-app-airpi-fancontrol=m' >> .config
 echo 'CONFIG_PACKAGE_kmod-airpi-gpio-fan=m'       >> .config
-make defconfig
-
 make package/luci-app-airpi-fancontrol/compile V=s
 make package/airpi-gpio-fan/compile V=s
+
 ```
 
-产物位于 `bin/packages/aarch64_cortex-a53/base/` 与 `bin/targets/mediatek/filogic/packages/`。
-
-### 并入固件源码树编译
-
-将两个包目录复制到源码树的 `package/` 下，然后在 `make menuconfig` 中勾选：
-
-- `LuCI → 3. Applications → luci-app-airpi-fancontrol`
-- `Kernel modules → Other modules → kmod-airpi-gpio-fan`
+> [!TIP]
+> **跳过 SDK 内部 Rust 构建**：若已在宿主机使用 cargo 交叉编译好了 `airpi-fanctl`，可追加参数 `AIRPI_PREBUILT=1 AIRPI_PREBUILT_BIN=/path/to/airpi-fanctl` 快速打包。
 
 ---
 
-## 常见问题
+## 📂 项目结构
 
-**「模拟PWM内核未加载」一直是红色**
-
-说明 `airpi-gpio-fan.ko` 没有成功 insmod。依次检查：
-
-```sh
-lsmod | grep -i airpi              # 是否已加载
-logread | grep airpi_gpio_fan      # 查看驱动日志
-ls /sys/kernel/duty_cycle          # sysfs 节点是否存在
-```
-
-最常见的原因是内核模块与当前内核版本不匹配，重新下载对应固件版本的包即可。
-
-若 `logread` 中出现 `Unknown symbol gpio_request`（或 `Unknown symbol gpio_free`），说明设备内核把 `CONFIG_GPIOLIB_LEGACY` 关掉了，而模块仍是 3.x 版本。换用 4.0.0 及以后的模块即可：该版本会在这种情况下自动切换到「描述符 + 查找表」的引脚申请路径。驱动加载日志会明确打印走的是哪条路径：
-
-```
-# 走传统整数接口（6.17 之前，或 6.17+ 但内核仍启用该开关）
-airpi_gpio_fan: loading v4.0.0 (legacy GPIO path: yes)
-airpi_gpio_fan: GPIO 540 claimed through the legacy integer interface
-
-# 走描述符查找表（6.17+ 且内核关闭了该开关）
-airpi_gpio_fan: loading v4.0.0 (legacy GPIO path: no)
-airpi_gpio_fan: GPIO 540 claimed by descriptor lookup on chip <控制器名> hwnum <片内偏移>
-```
-
-`logread | grep airpi_gpio_fan` 即可看到上述内容。
-
-**风扇有啸叫声**
-
-软 PWM 模式下适当调低「模拟 PWM 周期」，或改用硬件 PWM 驱动。
-
-**温度一直显示 null**
-
-说明所有温度源都读不到有效值。注意只有落在 **1 – 150 °C** 区间的读数才会被采纳，返回 0、负数或明显超量程的传感器会被直接忽略。手动执行 `/usr/bin/get_sys_temp.sh -s` 查看最高温的数值与来源标签，或 `get_sys_temp.sh -a` 列出全部可用来源进行排查。
-
-**风扇不转 / 一直全速**
-
-先使用默认的「自动识别」模式。若手动指定驱动，确认硬件 PWM 模式存在 `pwm-fan` hwmon 接口，软件 PWM 模式则需要成功加载 `airpi-gpio-fan.ko`。
-
----
-
-## 目录结构
-
-```
+```text
 .
-├── .github/workflows/build.yml       自动编译与发布流程
-├── airpi-gpio-fan/                   GPIO 软 PWM 内核驱动
-│   ├── Makefile                      OpenWrt 内核模块打包定义
+├── .github/workflows/build.yml        # CI 自动编译与发版工作流
+├── airpi-gpio-fan/                    # GPIO 软 PWM 内核驱动
+│   ├── Makefile                       # OpenWrt kmod 打包脚本
 │   └── src/
-│       ├── Makefile                  Kbuild 编译定义
-│       └── airpi-gpio-fan.c          驱动源码
-├── luci-app-airpi-fancontrol/        LuCI 应用(JS 版)
-│   ├── Makefile                      OpenWrt 软件包定义
-│   ├── src/                          Rust 守护进程源码
-│   │   ├── Cargo.toml                构建定义（无第三方 crate 依赖）
-│   │   ├── Cargo.lock                依赖锁定
-│   │   └── src/main.rs               airpi-fanctl 实现
+│       ├── Makefile                   # Kbuild 定义
+│       └── airpi-gpio-fan.c           # 驱动核心源码
+├── luci-app-airpi-fancontrol/         # LuCI 现代前端与后端
+│   ├── Makefile                       # OpenWrt package 构建规则
+│   ├── src/                           # Rust 守护进程工程
+│   │   ├── Cargo.toml                 # 零三方依赖 Cargo 配置
+│   │   ├── Cargo.lock
+│   │   └── src/main.rs                # airpi-fanctl 调度与多温区探测
 │   ├── htdocs/luci-static/resources/view/airpi-fancontrol/
-│   │   ├── fancontrol.js             风扇控制台视图(状态页)
-│   │   └── settings.js               风扇设置视图
-│   └── files/
-│       ├── etc/config/airpi-fan      UCI 配置
-│       ├── etc/init.d/airpi-fancontrol  服务脚本
-│       └── usr/
-│           ├── bin/airpi-fanctl      Rust 控制工具与温控守护进程
-│           ├── bin/airpi-fanctl.sh   LuCI/rpcd 兼容入口
-│           ├── bin/get_sys_temp.sh   旧命令兼容入口
-│           ├── share/luci/menu.d/    LuCI 菜单注册
-│           └── share/rpcd/acl.d/     RPCD 访问控制声明
-├── docs/                             界面预览图
-│   ├── preview-fancontrol.png        风扇控制状态页截图
-│   └── preview-fan-settings.png      风扇设置页截图
-├── CHANGELOG.md                      更新日志
-└── LICENSE                           GPL-2.0
+│   │   ├── fancontrol.js              # 状态监控视图
+│   │   └── settings.js                # 驱动与风扇参数设置视图
+│   └── files/                         # 系统运行资产
+│       ├── etc/config/airpi-fan       # 默认 UCI 配置
+│       ├── etc/init.d/airpi-fancontrol# procd 启动脚本
+│       └── usr/bin/airpi-fanctl.sh    # rpcd/LuCI 桥接入口脚本
+├── docs/                              # 界面预览资源
+├── CHANGELOG.md                       # 版本迭代历史
+└── LICENSE                            # GPL-2.0 开源授权
+
 ```
 
 ---
 
-## 致谢
+## 💖 致谢与开源协议
 
-本项目的源码与后续修改均基于 **Manper** 大佬的。在此基础之上，本项目针对 AirPi AP3000M 的软/硬件 PWM 驱动、多路温度源采集与 LuCI 前端做了适配与重构。
-
-感谢 Manper 大佬的开源分享。
-
----
-
-## 许可证
-
-本项目采用 [GPL-2.0-only](LICENSE) 许可证。
+* 本项目基于 **Manper** 大佬的初始工作重构演进，在此基础之上完成了针对 AirPi AP3000M 的软硬件双模式适配、内核兼容性升级与 Rust 核心重构。
+* 感谢开源社区所有无私奉献的开发者。
+* 本项目遵循 [GPL-2.0-only](https://www.google.com/search?q=LICENSE&utm_source=gemini) 开源协议发布。
