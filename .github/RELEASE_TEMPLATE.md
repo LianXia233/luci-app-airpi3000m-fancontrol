@@ -32,4 +32,4 @@ opkg install ./luci-app-airpi-fancontrol_*_openwrt-24.10.ipk \
              ./kmod-airpi-gpio-fan_*_openwrt-24.10.ipk
 ```
 
-安装完成后刷新浏览器缓存，在 **状态 → 风扇控制** 查看运行状态，在 **状态 → 风扇设置** 调整驱动参数。命令行可用 `/etc/init.d/airpi-fancontrol restart` 重启服务。
+安装完成后刷新浏览器缓存，在 **状态 → 风扇控制** 查看运行状态并调整驱动参数（状态座舱与硬件总线配置已合并到同一页面，v6.0.0 起不再有独立的「风扇设置」子菜单）。命令行可用 `/etc/init.d/airpi-fancontrol restart` 重启服务。

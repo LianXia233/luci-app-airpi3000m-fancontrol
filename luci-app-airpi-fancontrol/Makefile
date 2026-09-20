@@ -5,6 +5,10 @@
 # luci-app-airpi-fancontrol
 #   Fan control web UI for the AirPi AP3000M (MediaTek MT7981B / filogic).
 #
+# v6.0.0: the settings view was merged into the status page. There is now a
+# single menu entry (admin/status/airpi-fancontrol) and settings.js no longer
+# exists; upgrades remove the stale file from the device (see postinst).
+#
 # v4.0.0: rewritten as a modern client-side (JS) LuCI application.
 # The legacy Lua controller stack (luci-compat / luci-lua-runtime) was
 # removed from immortalwrt master and recent OpenWrt snapshots, so the
@@ -20,7 +24,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-airpi-fancontrol
-PKG_VERSION:=5.0.0
+PKG_VERSION:=6.0.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community
@@ -99,8 +103,6 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/airpi-fancontrol
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/airpi-fancontrol/fancontrol.js \
 		$(1)/www/luci-static/resources/view/airpi-fancontrol/fancontrol.js
-	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/airpi-fancontrol/settings.js \
-		$(1)/www/luci-static/resources/view/airpi-fancontrol/settings.js
 endef
 
 define Package/$(PKG_NAME)/postinst
@@ -108,6 +110,9 @@ define Package/$(PKG_NAME)/postinst
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/airpi-fancontrol enable >/dev/null 2>&1
 /etc/init.d/rpcd reload >/dev/null 2>&1
+# v6.0.0: the settings view was merged into the status page; drop the orphaned
+# file left behind on devices upgraded from <= 5.x so it cannot be served.
+rm -f /www/luci-static/resources/view/airpi-fancontrol/settings.js 2>/dev/null
 rm -f /tmp/luci-indexcache /tmp/luci-indexcache.json /tmp/luci-modulecache/* 2>/dev/null
 exit 0
 endef

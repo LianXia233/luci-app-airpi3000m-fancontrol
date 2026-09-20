@@ -9,16 +9,5 @@
 		"depends": {
 			"acl": [ "luci-app-airpi-fancontrol" ]
 		}
-	},
-	"admin/status/airpi-fancontrol-settings": {
-		"title": "风扇设置",
-		"order": 100,
-		"action": {
-			"type": "view",
-			"path": "airpi-fancontrol/settings"
-		},
-		"depends": {
-			"acl": [ "luci-app-airpi-fancontrol" ]
-		}
 	}
 }

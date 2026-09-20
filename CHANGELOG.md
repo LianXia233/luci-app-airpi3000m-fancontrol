@@ -2,17 +2,25 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [6.0.0] - 2026-09-21
+
+> [!NOTE]
+> 本次为前端单页化改版：状态座舱、硬件总线看板与驱动参数表单合并到「状态 → 风扇控制」一页内，
+> 独立的「状态 → 风扇设置」子菜单与 `settings.js` 视图一并移除。
 
 ### 新增
 
-- **界面预览图**：新增 `docs/preview-fancontrol.png`（风扇控制状态页）与 `docs/preview-fan-settings.png`（风扇设置页）；README 新增「界面预览」章节引用两张截图
+- **界面预览图**：新增 `docs/preview-fancontrol.png`（合并后的单页视图）；README 新增「界面预览」章节引用该截图
 - **硬件 PWM 探测路径**：README 补充硬件 PWM 接口的完整探测顺序（hwmon `pwm1` → MT7981 `pwmchip*/pwm*/duty_cycle`）与 eMMC 容量不可读时的回退规则
 - **温度采集细节**：补充读数有效区间 1–150 °C、模组温度单位换算规则、同名来源取最高值、Wi-Fi 仅取 `ra0`/`rax0`/`rai0` 中首个存在的接口
 - **构建开关**：补充 `AIRPI_PREBUILT=1` 打包预编译 Rust 二进制的用法
 - **目录结构**：补充 Rust 源码 `src/` 目录，修正 `files/usr/` 下 `bin` 与 `share` 的层级错位
 - **Rust 守护进程章节**：新增 `airpi-fanctl` 专章，说明选用 Rust 的取舍（零第三方依赖、静态链接 musl、release 体积裁剪、内置单元测试）、10 个子命令的用法、`/etc/fanvall` 档位码映射、两种构建方式（SDK 交叉编译 / `AIRPI_PREBUILT` 打包，CI 采用后者以复用宿主 rustup）、本地开发命令，以及 `airpi-fanctl.sh` / `get_sys_temp.sh` 两个 shell 包装存在的 rpcd 授权原因
 - **致谢**：README 新增「致谢」章节，说明本项目的源码与后续修改均基于 Manper 大佬的分享而来
+- **状态座舱重构**：三列卡片式布局（风扇座舱 / 调速模式 / 温度传感），主占空比与运行模式直接由 `airpi-fanctl status` 的真实 `fanspd` 推导，4 秒轮询刷新
+- **陶瓷风扇可视化**：7 叶陶瓷白 SVG 风扇，转子转速（0.24 ~ 1.40 秒 / 圈）与气流涟漪周期均由真实占空比反比驱动，停转时冻结动画而非维持空转
+- **硬件拓扑与调制总线感知看板**：实时呈现 eMMC 容量规格、硬件 PWM 节点探测结果、GPIO 软中断模块加载状态，三张结论卡由 `airpi-fanctl hwdetect` 的真实输出驱动
+- **实时 PWM 示波器**：按真实 `duty / 255` 生成方波（6 周期无缝滚动，脉宽 2 ~ 46px），并随轮询刷新占空比徽标
 
 ### 变更
 
@@ -37,6 +45,9 @@
   - **二次修正了"100% 占空比"修复自身的实现缺陷**：初版把写满占空比也交给停表路径处理，而停表固定输出低电平，导致写入 `cycle` 时风扇停转而非全速运转。现改为独立的"恒定电平"路径 —— 100% 输出持续高电平、0% 输出持续低电平，且两者都不再占用高分辨率定时器
   - 参数回调（`fanen` 写 0 立即输出低电平并停表、写 1 重新起表）、超范围写入钳制（9999 → 255）、非数字写入拒绝，均实测符合预期
 - **补充编译约束说明**：实测确认产物除 vermagic 之外还须与目标内核的 `struct module` 布局一致，否则要么直接加载失败（`section size must match`），要么出现"能加载、能工作、但无法卸载"的 `[permanent]` 现象。README 增补了差异项对照表与自检命令（用 `readelf -SW/-rW` 核对 `this_module` 的段大小与重定位偏移）
+- **界面合并为单页**：原「状态 → 风扇设置」整页并入「状态 → 风扇控制」，菜单仅保留 `admin/status/airpi-fancontrol` 一个入口。实现上把设置视图改为**纯对象**（不再 `view.extend` 注册框架），由主视图 `HWCfg.render.call()` 调用 —— 否则同一模块内第二个视图实例会接管主内容区，把状态座舱整片替换掉
+- **驱动参数按策略条件显示**：`自动感知与适配` 下只显示调度策略与驱动热重载；选中「软件 PWM」后才展开 GPIO 编号与调制周期
+- **包版本升至 6.0.0**，并在 `postinst` 中清理由 ≤ 5.x 升级上来的设备所残留的 `settings.js`
 
 ### 修正
 
@@ -47,12 +58,16 @@
 - **温控区间边界**：按 `temp > 阈值` 的实际判定，将曲线表更正为 `> 85` / `> 60 且 ≤ 85` / `> 50 且 ≤ 60` / `≤ 50`
 - **高亮配色**：最高温卡片高亮色由「蓝色」更正为「青色」（`--cy`，#22d3ee）
 - **转速读数**：明确状态页 RPM 为按占空比换算的估算值，风扇未引出测速引脚、无真实转速反馈
+- **窄屏下条件字段全部同时显示**：本文件为窄屏堆叠加的响应式规则 `.cbi-map .cbi-value { display: block !important; }`，会连同 LuCI 用于 `depends` 的 `.hidden` 一起强开 —— 表现为 `auto` 模式下硬件 PWM 与软件 PWM 两套互斥字段在窄屏同时出现（宽屏不受影响，只测宽屏无法发现）。现改为 `:not(.hidden)` 并补 `.cbi-value.hidden { display: none !important; }` 兜底
+- **删除与看板重复的状态行**：表单内「硬件 PWM 挂载路径」「内核模块运行状态」两行只读状态与上方硬件看板卡片表达的是同一结论，已删除，信息统一由看板承载
 
 ### 移除
 
 - **`tempsrc <cpu|modem>` 子命令**：该子命令把温度源标签写入 `/etc/fanvallv.conf`，但该文件从无任何代码读取。v3.6.0 起「多源取最大值」已是唯一既定策略，温度源切换开关早已从 UI 移除，此子命令与 `FANVALV_FILE` 常量一并删除。`airpi-fanctl` 的用法提示同步更新（并补上此前遗漏的 `legacy-temp` 分支）
 - **UCI 选项 `fan_enable`**：自初始版本起即存在于 `/etc/config/airpi-fan` 且被 README 标注为「风扇总开关」，但全仓库无任何代码读取。作为会误导用户的占位项删除。注意：该文件是 conffile，升级时不会被覆盖，已安装设备上的残留选项无害
 - 删除 `luci-app-airpi-fancontrol/README.md` 与 `luci-app-airpi-fancontrol/CHANGELOG.md`：子包内两份文档已与根目录长期不同步（子包 README 缺失界面预览与 CI 目标说明，子包 CHANGELOG 缺失整个 4.x 系列），统一以根目录文档为准。两个文件均未被 `Makefile` 的 `install` 段引用，删除不影响打包
+- **独立设置视图**：`htdocs/luci-static/resources/view/airpi-fancontrol/settings.js` 与菜单节点 `admin/status/airpi-fancontrol-settings` 一并移除，其内容已并入状态页；`Makefile` 不再安装该文件。**注意**：已安装设备在升级后若仍保留该文件会被 `postinst` 删除，旧书签 `…/admin/status/airpi-fancontrol-settings` 将返回 404
+- **失效预览图**：`docs/preview-fan-settings.png` 随设置页一同删除；`docs/preview-fancontrol.png` 刷新为合并后的单页截图
 
 ## [5.0.0] - 2026-08-25
 
