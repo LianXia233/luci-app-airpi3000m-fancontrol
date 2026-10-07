@@ -1,0 +1,131 @@
+#!/bin/sh /etc/rc.common
+# AirPi Fan Control unified init script (procd)
+# Part of luci-app-airpi-fancontrol v4.2.0
+
+USE_PROCD=1
+START=99
+STOP=10
+
+PROGRAM="airpi-fancontrol"
+CONFIG_FILE="/etc/config/airpi-fan"
+PID_FILE="/var/run/airpi-fancontrol.pid"
+DUTY_PATH="/sys/kernel/duty_cycle"
+EMMC_FILE="/sys/block/mmcblk0/size"
+EMMC_THRESHOLD=25000000
+
+printMsg() {
+    local msg="$1"
+    logger -t "${PROGRAM}" "${msg}"
+}
+
+detect_emmc_sectors() {
+    [ -r "$EMMC_FILE" ] || return 1
+    local s; s=$(cat "$EMMC_FILE" 2>/dev/null)
+    case "$s" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$s" -gt 0 ] 2>/dev/null && echo "$s" && return 0
+    return 1
+}
+
+load_softpwm_driver() {
+    local gpio freq
+    config_get gpio settings fan_gpio "540"
+    config_get freq settings fan_freq "15000"
+
+    rmmod airpi_gpio_fan 2>/dev/null
+
+    # 用模块名而非完整路径，兼容不同内核版本的安装路径
+    if ! insmod airpi-gpio-fan fangpio="$gpio" cycle=255 period="$freq" fanen=1; then
+        if ! modprobe airpi_gpio_fan fangpio="$gpio" cycle=255 period="$freq" fanen=1; then
+            printMsg "failed to load soft-PWM driver"
+            return 1
+        fi
+    fi
+
+    printMsg "soft-PWM driver loaded (GPIO=$gpio, period=$freq us)"
+
+    # 立即写入初始占空比让风扇转起来，不等 Rust 守护进程首轮循环
+    sleep 1
+    [ -w "$DUTY_PATH" ] && echo 64 > "$DUTY_PATH" 2>/dev/null
+}
+
+find_pwm_path() {
+    local pwm
+    for pwm in /sys/class/hwmon/hwmon*/pwm1; do
+        [ -w "$pwm" ] || continue
+        case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
+            pwmfan|pwm-fan) echo "$pwm"; return 0 ;;
+        esac
+    done
+    # AP3000M MT7981 hardware PWM fallback. Its exported interface accepts
+    # the same 0..255 values used by the LuCI controls.
+    for duty in /sys/class/pwm/pwmchip*/pwm*/duty_cycle; do
+        [ -w "$duty" ] && { echo "$duty"; return 0; }
+    done
+    return 1
+}
+
+start_service() {
+    local driver pwm emmc
+
+    [ -f "$CONFIG_FILE" ] || {
+        printMsg "Config file not found, using defaults"
+    }
+
+    config_load airpi-fan
+    config_get driver settings fan_driver "auto"
+
+    if [ "$driver" = "auto" ]; then
+        emmc=$(detect_emmc_sectors)
+        if [ -n "$emmc" ]; then
+            if [ "$emmc" -gt "$EMMC_THRESHOLD" ]; then
+                driver="softpwm"
+            else
+                driver="pwm"
+            fi
+        else
+            pwm=$(find_pwm_path)
+            [ -n "$pwm" ] && driver="pwm" || driver="softpwm"
+        fi
+    fi
+
+    if [ "$driver" = "softpwm" ]; then
+        load_softpwm_driver || return 1
+    elif [ -n "$(find_pwm_path)" ]; then
+        rmmod airpi_gpio_fan 2>/dev/null
+        printMsg "using hardware PWM driver"
+    elif [ "$driver" = "pwm" ]; then
+        printMsg "hardware PWM selected but pwm-fan interface was not found"
+        return 1
+    fi
+
+    procd_open_instance
+    procd_set_param command /usr/bin/airpi-fanctl daemon
+    procd_set_param respawn 3600 1 5
+    procd_close_instance
+
+    printMsg "AirPi fan control service started (procd)"
+}
+
+stop_service() {
+    local pwm
+    for pwm in /sys/class/hwmon/hwmon*/pwm1; do
+        [ -w "$pwm" ] || continue
+        case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
+            pwmfan|pwm-fan) echo 64 > "$pwm" 2>/dev/null; break ;;
+        esac
+    done
+    if [ -w "$DUTY_PATH" ]; then
+        echo 0 > "$DUTY_PATH" 2>/dev/null
+    fi
+
+    printMsg "AirPi fan control service stopped"
+}
+
+service_triggers() {
+    procd_add_reload_trigger "airpi-fan"
+}
+
+reload_service() {
+    stop
+    start
+}

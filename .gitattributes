@@ -1,0 +1,17 @@
+# 目标平台为 OpenWrt(Linux)，所有源码与脚本一律使用 LF，
+# 避免在 Windows 上检出后被转成 CRLF 导致设备上无法执行。
+* text=auto eol=lf
+
+Makefile        text eol=lf
+*.mk            text eol=lf
+*.sh            text eol=lf
+*.c             text eol=lf
+*.h             text eol=lf
+*.lua           text eol=lf
+*.htm           text eol=lf
+*.yml           text eol=lf
+*.md            text eol=lf
+
+# init 脚本与 UCI 配置无扩展名，需显式声明
+luci-app-airpi-fancontrol/files/etc/init.d/*   text eol=lf
+luci-app-airpi-fancontrol/files/etc/config/*   text eol=lf

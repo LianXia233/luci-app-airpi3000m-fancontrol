@@ -1,0 +1,14 @@
+{
+	"luci-app-airpi-fancontrol": {
+		"description": "Grant UCI and helper-script access for luci-app-airpi-fancontrol",
+		"read": {
+			"uci": [ "airpi-fan" ]
+		},
+		"write": {
+			"uci": [ "airpi-fan" ],
+			"file": {
+				"/usr/bin/airpi-fanctl.sh": [ "exec" ]
+			}
+		}
+	}
+}

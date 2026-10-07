@@ -1,0 +1,399 @@
+name: 编译与发布
+# 新增 run-name，让 Actions 列表中的单次运行记录也显示为中文
+run-name: 🚀 ${{ github.actor }} 手动触发的编译与发布流程
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '自定义发布标签（留空则自动按时间生成 Tag）'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TARGET: mediatek
+  SUBTARGET: filogic
+  PKG_ARCH: aarch64_cortex-a53
+
+jobs:
+  # 三个矩阵目标共享同一套流程。耗时大头原本是 SDK 下载解压与 feeds 的 git clone，
+  # 现按目标分别缓存；编译去掉 V=s 回到默认静默，避免输出 GB 级日志拖慢 IO。
+  build:
+    name: 📦 编译 ${{ matrix.tag }} (${{ matrix.version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 'OpenWrt 24.10.8'
+            sdk_url: 'https://downloads.openwrt.org/releases/24.10.8/targets/mediatek/filogic/openwrt-sdk-24.10.8-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst'
+            tag: 'ipk'
+          - version: 'OpenWrt 25.12.5'
+            sdk_url: 'https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
+            tag: 'apk'
+          # immortalwrt master 快照 SDK(当前为 kernel 6.18),用于验证最新内核适配
+          - version: 'ImmortalWrt master'
+            sdk_url: ''
+            tag: 'immortalwrt-master'
+
+    steps:
+      - name: 记录开始时间
+        run: echo "BUILD_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: 检出源码
+        uses: actions/checkout@v4
+        with:
+          path: pkgsrc
+          fetch-depth: 1
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gettext git bc \
+            libncurses-dev libssl-dev libelf-dev python3 python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget zstd
+
+      - name: 计算 feeds 缓存时间桶
+        id: bucket
+        run: echo "week=$(date +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: 解析 SDK 下载地址
+        id: sdkurl
+        run: |
+          set -euo pipefail
+          if [ -n "${{ matrix.sdk_url }}" ]; then
+            URL="${{ matrix.sdk_url }}"
+          else
+            # ImmortalWrt master 快照:从下载目录动态解析最新 SDK 文件名
+            BASE="https://downloads.immortalwrt.org/snapshots/targets/${TARGET}/${SUBTARGET}"
+            LISTING=$(wget -qO- "$BASE/")
+            SDK_FILE=$(echo "$LISTING" | grep -oE 'immortalwrt-sdk-[^"]+\.Linux-x86_64\.tar\.zst' | head -1)
+            [ -n "$SDK_FILE" ] || { echo "::error::无法从 $BASE 解析 SDK 文件名"; exit 1; }
+            URL="$BASE/$SDK_FILE"
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "hash=$(printf '%s' "$URL" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "SDK: $URL"
+
+      # SDK 解压后约 1-1.5GB,是单次运行最大的固定开销。缓存键取自下载地址,
+      # 固定版本 SDK 可长期命中,快照 SDK 换包时自动失效。
+      - name: 恢复 SDK 缓存
+        id: cache-sdk
+        uses: actions/cache/restore@v4
+        with:
+          path: sdk
+          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile', '.github/workflows/build.yml') }}
+          restore-keys: |
+            sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-
+
+      - name: 下载并解压 SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          wget -q -O sdk.tar.zst "${{ steps.sdkurl.outputs.url }}"
+          mkdir -p "$GITHUB_WORKSPACE/sdk"
+          tar --zstd -xf sdk.tar.zst -C "$GITHUB_WORKSPACE/sdk" --strip-components=1
+          rm -f sdk.tar.zst
+
+      # 在 feeds 更新之前保存,保证缓存里是干净的 SDK,不含 feeds 与构建产物
+      - name: 保存 SDK 缓存
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: sdk
+          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile', '.github/workflows/build.yml') }}
+
+      - name: 恢复 feeds 缓存
+        id: cache-feeds
+        uses: actions/cache/restore@v4
+        with:
+          path: sdk/feeds
+          key: feeds-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.bucket.outputs.week }}
+
+      - name: 更新 feeds
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          # 全量更新:本项目依赖 luci-base（来自 feeds/luci），
+          # 选择性 update 在某些 SDK（如 ImmortalWrt）下会漏掉依赖导致后续
+          # package/luci-app-airpi-fancontrol/compile 以 exit code 2 静默失败。
+          ./scripts/feeds update -a
+
+      - name: 保存 feeds 缓存
+        if: steps.cache-feeds.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: sdk/feeds
+          key: feeds-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.bucket.outputs.week }}
+
+      - name: 预编译 Rust 用户态程序
+        working-directory: pkgsrc/luci-app-airpi-fancontrol/src
+        run: |
+          set -euxo pipefail
+          LINKER=$(find "$GITHUB_WORKSPACE/sdk/staging_dir" -type f -name '*-gcc' -perm -111 | head -1)
+          [ -n "$LINKER" ] || { echo "::error::未找到 OpenWrt 目标交叉链接器"; exit 1; }
+          mkdir -p "$HOME/.cargo"
+          printf '[target.aarch64-unknown-linux-musl]\nlinker = "%s"\n' "$LINKER" > "$HOME/.cargo/config.toml"
+          cargo build --locked --release --target aarch64-unknown-linux-musl
+
+      - name: 安装 feeds 中的软件包定义
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          # 先显式安装本项目直接依赖，缺失时立即报错；再全量 install 拉取传递依赖。
+          ./scripts/feeds install -a
+          ./scripts/feeds install luci-base kmod-hwmon-pwmfan 2>/dev/null || true
+
+      - name: 链接本仓库软件包
+        working-directory: sdk
+        run: |
+          set -euxo pipefail
+          ln -sfn "$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol" package/luci-app-airpi-fancontrol
+          ln -sfn "$GITHUB_WORKSPACE/pkgsrc/airpi-gpio-fan" package/airpi-gpio-fan
+          ls -l package/ | grep airpi
+
+      - name: 生成编译配置
+        working-directory: sdk
+        run: |
+          set -euxo pipefail
+          make defconfig
+          # 幂等:先删除旧的 airpi 相关配置行,再追加,避免缓存 SDK 中残留的
+          # .config 被重复追加导致配置冲突(这是静默编译 exit code 2 的常见诱因)。
+          sed -i '/CONFIG_PACKAGE_luci-app-airpi-fancontrol/d' .config
+          sed -i '/CONFIG_PACKAGE_kmod-airpi-gpio-fan/d' .config
+          cat >> .config <<'EOF'
+          CONFIG_PACKAGE_luci-app-airpi-fancontrol=m
+          CONFIG_PACKAGE_kmod-airpi-gpio-fan=m
+          EOF
+          make defconfig
+          echo "----- 生效的相关配置 -----"
+          grep -E 'airpi' .config || { echo "::error::软件包未出现在 .config 中，请检查 Makefile 依赖"; exit 1; }
+
+      # 默认静默（V 不含 s）以减少 GB 级日志；一旦失败则用 V=s 重跑一次,
+      # 把真实错误（依赖缺失/编译报错）打到日志,避免只看到 "exit code 2"。
+      # 注意:include/verbose.mk 以 "V 值是否含 s" 判断详细输出,
+      # 因此 V=sc 仍会触发详细输出,不能作为静默开关。
+      - name: 编译 luci-app-airpi-fancontrol
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          if ! make package/luci-app-airpi-fancontrol/compile -j$(nproc) \
+                AIRPI_PREBUILT=1 \
+                AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"; then
+            echo "::error::首次编译失败,以 V=s 重跑以获取诊断信息"
+            make package/luci-app-airpi-fancontrol/compile V=s -j1 \
+              AIRPI_PREBUILT=1 \
+              AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"
+          fi
+
+      - name: 编译 kmod-airpi-gpio-fan
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          if ! make package/airpi-gpio-fan/compile -j$(nproc); then
+            echo "::error::kmod 首次编译失败,以 V=s 重跑以获取诊断信息"
+            make package/airpi-gpio-fan/compile V=s -j1
+          fi
+
+      - name: 收集安装包
+        working-directory: sdk
+        run: |
+          set -euxo pipefail
+          OUT="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$OUT"
+          find bin/ -type f \( -name '*airpi*.ipk' -o -name '*airpi*.apk' \) -exec cp -v {} "$OUT/" \;
+          echo "----- 产出清单 -----"
+          ls -lh "$OUT"
+          COUNT=$(find "$OUT" -type f \( -name '*.ipk' -o -name '*.apk' \) | wc -l)
+          if [ "$COUNT" -lt 2 ]; then
+            echo "::error::期望至少 2 个安装包（LuCI 应用 + 内核模块），实际只有 $COUNT 个"
+            exit 1
+          fi
+
+      - name: 上传构建日志（仅失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.tag }}
+          path: sdk/logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: airpi-fancontrol-${{ matrix.tag }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 输出构建耗时
+        if: always()
+        run: |
+          DUR=$(( $(date +%s) - ${BUILD_START:-$(date +%s)} ))
+          printf '📦 %s 本次耗时 %d 分 %d 秒\n' "${{ matrix.tag }}" $((DUR/60)) $((DUR%60))
+
+  # 注意：这里的 'release' 也是系统识别的 Job ID，必须用英文
+  release:
+    name: 🚀 发布到 Releases
+    needs: build
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: release-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: 整理发布文件（按目标重命名，避免同名覆盖）
+        id: prep
+        run: |
+          set -euxo pipefail
+          mkdir -p release
+
+          # 三个矩阵目标编译出的 LuCI 包文件名原本完全相同（均为
+          # luci-app-airpi-fancontrol-<ver>.apk），汇总到一起会互相覆盖，
+          # 导致 25.12 与 immortalwrt-master 只剩一个且无法区分。
+          # 这里按构建目标追加后缀，让文件名自解释。
+          for pair in \
+            "dist/airpi-fancontrol-ipk:openwrt-24.10" \
+            "dist/airpi-fancontrol-apk:openwrt-25.12" \
+            "dist/airpi-fancontrol-immortalwrt-master:immortalwrt-master" ; do
+            dir="${pair%%:*}"; suffix="${pair##*:}"
+            if [ ! -d "$dir" ]; then
+              echo "::warning::缺少产物目录 $dir（该目标可能未产出）"
+              continue
+            fi
+            while IFS= read -r -d '' f; do
+              base=$(basename "$f")
+              case "$base" in
+                *.ipk) cp -v "$f" "release/${base%.ipk}_${suffix}.ipk" ;;
+                *.apk) cp -v "$f" "release/${base%.apk}_${suffix}.apk" ;;
+              esac
+            done < <(find "$dir" -type f \( -name '*.ipk' -o -name '*.apk' \) -print0)
+          done
+
+          ls -lh release
+          COUNT=$(find release -type f \( -name '*.ipk' -o -name '*.apk' \) | wc -l)
+          if [ "$COUNT" -lt 2 ]; then
+            echo "::error::release 目录仅 $COUNT 个安装包，少于期望的 2 个"
+            exit 1
+          fi
+          echo "共 $COUNT 个安装包"
+
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="v$(date +'%Y%m%d%H%M%S')"
+            echo "未提供标签，自动生成时间标签: $TAG"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 生成中文发布说明
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.prep.outputs.tag }}"
+          OUT=RELEASE_NOTES.md
+          : > "$OUT"
+
+          echo "## AirPi AP3000M 风扇控制 ${TAG}" >> "$OUT"
+          echo >> "$OUT"
+
+          # 静态说明取自独立模板，避免 markdown 缩进被 shell heredoc 破坏
+          cat .github/RELEASE_TEMPLATE.md >> "$OUT"
+          echo >> "$OUT"
+
+          # ---- 从 CHANGELOG 提取更新内容 ----
+          # 时间戳 tag（v2026...）在 CHANGELOG 中并无对应章节，此时回退提取「未发布」段。
+          SECTION=$(awk -v tag="${TAG#v}" '
+            !flag && (index($0, "## [" tag "]") == 1 || index($0, "## " tag) == 1) { flag=1; next }
+            flag && /^## / { exit }
+            flag { print }
+          ' CHANGELOG.md || true)
+
+          FALLBACK=0
+          if [ -z "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
+            SECTION=$(awk '
+              !flag && (index($0, "## [未发布]") == 1 || index($0, "## 未发布") == 1) { flag=1; next }
+              flag && /^## / { exit }
+              flag { print }
+            ' CHANGELOG.md || true)
+            FALLBACK=1
+          fi
+
+          if [ -n "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
+            echo "## 更新内容" >> "$OUT"
+            echo >> "$OUT"
+            if [ "$FALLBACK" -eq 1 ]; then
+              echo "> 本版本未打语义化标签，以下内容取自 CHANGELOG 的「未发布」段。" >> "$OUT"
+            fi
+            printf '%s\n' "$SECTION" >> "$OUT"
+            echo >> "$OUT"
+          else
+            echo "::warning::未能从 CHANGELOG 提取到更新内容"
+          fi
+
+          # ---- 文件校验表 ----
+          echo "## 文件校验" >> "$OUT"
+          echo >> "$OUT"
+          echo "| 文件 | SHA-256 | 大小 |" >> "$OUT"
+          echo "| --- | --- | --- |" >> "$OUT"
+          while IFS= read -r -d '' f; do
+            base=$(basename "$f")
+            sum=$(sha256sum "$f" | cut -d' ' -f1)
+            size=$(du -h "$f" | cut -f1)
+            echo "| \`$base\` | \`$sum\` | $size |" >> "$OUT"
+          done < <(find release -type f \( -name '*.ipk' -o -name '*.apk' \) -print0 | sort -z)
+          echo >> "$OUT"
+
+          echo "完整变更记录见 [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md)。" >> "$OUT"
+
+          echo "----- 发布说明预览 -----"
+          cat "$OUT"
+
+      - name: 创建或更新 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.prep.outputs.tag }}"
+          TITLE="AirPi AP3000M 风扇控制 ${TAG}"
+
+          echo "===== 当前 tag ====="
+          echo "$TAG"
+
+          if [ -z "$(ls -A release 2>/dev/null)" ]; then
+            echo "::error::release 目录为空，没有找到任何 .ipk/.apk 文件"
+            exit 1
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "标签已存在，执行 upload + edit"
+            gh release upload "$TAG" release/* --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes-file RELEASE_NOTES.md
+          else
+            echo "标签不存在，执行 create"
+            gh release create "$TAG" release/* --title "$TITLE" --notes-file RELEASE_NOTES.md
+          fi
