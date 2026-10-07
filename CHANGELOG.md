@@ -2,6 +2,47 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [7.0.0] - 2026-10-08
+
+> [!NOTE]
+> 本次为全量模块化重构（refactor-v7）：LuCI 前端、Rust 守护进程与 Shell 启动脚本全部按职责拆分为独立模块，同时保持菜单路径、UCI 配置、RPC 接口、CLI 命令与驱动参数完全兼容，不引入任何用户侧迁移成本。
+
+### 新增
+
+- **LuCI 前端模块化拆分**：单页视图由「一个巨型 `fancontrol.js`」重构为「视图编排 + 14 个功能模块」：
+  - `view/airpi-fancontrol/fancontrol.js`：仅负责页面组装与生命周期编排（RPC → `api.js`，状态 → `state.js`，轮询 → `runtime.js`，UCI → `config.js`，UI → `components/*`，样式 → `styles/theme.js`）
+  - `api.js`：RPC 封装层，页面组件统一通过 `fs.exec` 调用 `airpi-fanctl.sh` / `init.d`，禁止组件直连
+  - `state.js`：页面状态层，单一数据源 + 订阅通知，组件通过 `subscribe` 感知变化
+  - `runtime.js`：轮询调度层，统一驱动状态刷新
+  - `config.js`：UCI 配置读写层
+  - `utils.js`：通用工具函数
+  - `styles/theme.js`：样式主题（配色、布局常量）
+  - `components/`：`status_bar` / `control_panel` / `sensor_grid` / `curve_chart` / `hardware_panel` / `config_panel` / `icons` 七个组件模块
+- **Rust 守护进程模块化**：`main.rs` 由单文件实现拆分为六层模块（入口与命令分发 / 配置 / 硬件 / 传感器 / 控制 / 服务），各层通过公开接口协作：
+  - `cli.rs`：命令层，全部子命令实现与分发
+  - `config.rs`：配置层，UCI 读取与参数范围校验
+  - `driver.rs`：硬件层，驱动检测 / 加载 / 卸载
+  - `sensor.rs`：传感器层，四路温度采集与多源仲裁
+  - `pwm.rs`：控制层，PWM 写入与硬件路径探测
+  - `daemon.rs`：服务层，守护循环、PID 管理与 procd 生命周期
+- **Makefile 安装段补齐模块目录**：`install` 新增 `www/luci-static/resources/airpi-fancontrol/`（含 `components`、`styles` 子目录）的整树拷贝，前端模块随包完整下发
+- **ACL 补充 init 执行权限**：rpcd ACL 在原有 `airpi-fanctl.sh` 之外新增 `/etc/init.d/airpi-fancontrol` 的 `exec` 授权，供前端触发服务控制 / 驱动热重载
+
+### 变更
+
+- **init 脚本重构（Shell 模块化）**：
+  - `find_pwm_path()` 前置并复用：`start_service` / `stop_service` 共用同一探测逻辑（hwmon `pwm-fan` 的 `pwm1` → MT7981 `pwmchip` 的 `duty_cycle`）
+  - `wait_duty_node()` 以 0.2s × 10 次的轮询替代固定 `sleep 1`，软 PWM 节点就绪后立即写入初始占空比 64，缩短开机启动时间
+  - `stop_service()` 统一经 `find_pwm_path()` 覆盖两条硬件 PWM 路径回退至 64，软件 PWM 写 0 停转，行为与 README 描述严格一致
+  - 脚本版本注释由 v4.2.0 更新为 v7.0.0
+- **CLI 接口保持不变**：`daemon | status | temp | temps | legacy-temp <-a|-c|-s> | set <speed> <mode> | auto | stepless <speed> | hwdetect | reload` 全部子命令在原语义下由 `cli.rs` 承接，LuCI 前端与既有脚本无需改动
+- **UCI 配置保持不变**：`/etc/config/airpi-fan` 的 `fan` 类型 `settings` 段（`fan_driver` / `fan_gpio` / `fan_freq`）及全部默认值不变
+- **菜单路径保持不变**：`admin/status/airpi-fancontrol`、视图 `airpi-fancontrol/fancontrol`、标题「风扇控制」均未改动
+
+### 移除
+
+- **未引入用户侧移除项**：本次重构不删除任何菜单、视图、配置项、子命令或兼容入口，升级无需迁移
+
 ## [6.0.0] - 2026-09-21
 
 > [!NOTE]

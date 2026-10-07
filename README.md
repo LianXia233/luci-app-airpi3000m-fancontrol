@@ -31,6 +31,7 @@
 - 🎛️ **丰富调速档位**：支持静音 (25%)、低速 (50%)、常规 (75%)、狂暴 (100%) 四档快捷预设、0~255 无极平滑滑块调速及阶梯智能温控。
 - 🎨 **三列卡片式状态面板**：动态高亮最高温源，实时呈现驱动工作状态、eMMC 闪存信息与模拟 RPM 估算曲线。
 - 🧩 **单页一体化界面 (v6.0.0+)**：状态座舱、硬件拓扑看板、实时 PWM 示波器与驱动参数表单全部合并在「状态 → 风扇控制」一页内，不再存在独立的「风扇设置」子菜单。
+- 🧱 **全量模块化架构 (v7.0.0+)**：LuCI 前端按职责拆分为视图编排 + 14 个功能模块（`api` / `state` / `runtime` / `config` / `utils` / `styles` / 7 个 `components`），Rust 守护进程拆分为 `cli` / `config` / `driver` / `sensor` / `pwm` / `daemon` 六层模块，init 脚本同步重构复用探测逻辑——菜单路径、UCI 配置、RPC 接口与 CLI 命令完全兼容，升级零迁移。
 - ⚡ **现代 LuCI 架构 (v4.0+)**：基于 Client-Side JavaScript 现代视图架构，彻底剥离过时的 `luci-compat`，无缝兼容 OpenWrt 24.10、25.12 与 ImmortalWrt master 分支。
 
 ---
@@ -147,10 +148,12 @@ airpi-fanctl daemon              # 启动温控守护前台主循环（交由 pr
 airpi-fanctl status              # 查看转速、档位码、生效驱动与运行状态
 airpi-fanctl temp                # 输出最高温度与对应来源标识
 airpi-fanctl temps               # 列出当前所有可用的温度源键值
+airpi-fanctl legacy-temp -a|-c|-s# 旧版温度采集兼容入口（-a 全部 / -c CPU / -s 模组）
 airpi-fanctl set <0-255> <0-3>   # 停止守护并固定转速与档位
 airpi-fanctl auto                # 切回智能温控（写入档位码 9 并重启守护）
 airpi-fanctl stepless <0-255>    # 无极自定义调速（写入档位码 999）
 airpi-fanctl hwdetect            # 打印 eMMC 大小、软硬件驱动与 PWM 路径检测全貌
+airpi-fanctl reload              # 热重载驱动与配置
 
 ```
 
@@ -297,9 +300,32 @@ make package/airpi-gpio-fan/compile V=s
 │   ├── src/                           # Rust 守护进程工程
 │   │   ├── Cargo.toml                 # 零三方依赖 Cargo 配置
 │   │   ├── Cargo.lock
-│   │   └── src/main.rs                # airpi-fanctl 调度与多温区探测
-│   ├── htdocs/luci-static/resources/view/airpi-fancontrol/
-│   │   └── fancontrol.js              # 单页视图：状态座舱 + 硬件总线与驱动设置（v6.0.0 起合并）
+│   │   └── src/                       # v7.0.0 起按职责拆分为六层模块
+│   │       ├── main.rs                # 入口与命令分发
+│   │       ├── cli.rs                 # 命令层：各子命令实现
+│   │       ├── config.rs              # 配置层：UCI 读取与校验
+│   │       ├── driver.rs              # 硬件层：驱动检测/加载/卸载
+│   │       ├── sensor.rs              # 传感器层：多源温度采集
+│   │       ├── pwm.rs                 # 控制层：PWM 写入与路径探测
+│   │       └── daemon.rs              # 服务层：守护循环与 procd 生命周期
+│   ├── htdocs/luci-static/resources/
+│   │   ├── view/airpi-fancontrol/
+│   │   │   └── fancontrol.js          # 视图编排：页面组装与生命周期（v6.0.0 起单页）
+│   │   └── airpi-fancontrol/          # v7.0.0 起模块化拆分（随包安装）
+│   │       ├── api.js                 # RPC 封装层（fs.exec 统一入口）
+│   │       ├── state.js               # 状态层（单一数据源 + 订阅）
+│   │       ├── runtime.js             # 轮询调度层
+│   │       ├── config.js              # UCI 配置读写层
+│   │       ├── utils.js               # 通用工具函数
+│   │       ├── styles/theme.js        # 样式主题（配色、布局常量）
+│   │       └── components/            # UI 组件模块
+│   │           ├── status_bar.js      # 状态横幅
+│   │           ├── control_panel.js   # 调速控制面板
+│   │           ├── sensor_grid.js     # 温度传感器网格
+│   │           ├── curve_chart.js     # 温控曲线图表
+│   │           ├── hardware_panel.js  # 硬件拓扑看板
+│   │           ├── config_panel.js    # 驱动参数表单
+│   │           └── icons.js           # 风扇 / 图标资源
 │   └── files/                         # 系统运行资产
 │       ├── etc/config/airpi-fan       # 默认 UCI 配置
 │       ├── etc/init.d/airpi-fancontrol# procd 启动脚本
