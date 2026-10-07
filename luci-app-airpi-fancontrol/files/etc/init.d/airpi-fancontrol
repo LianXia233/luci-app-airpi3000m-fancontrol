@@ -1,6 +1,6 @@
 #!/bin/sh /etc/rc.common
 # AirPi Fan Control unified init script (procd)
-# Part of luci-app-airpi-fancontrol v4.2.0
+# Part of luci-app-airpi-fancontrol v7.0.0
 
 USE_PROCD=1
 START=99
@@ -26,6 +26,32 @@ detect_emmc_sectors() {
     return 1
 }
 
+# 探测可写的硬件 PWM 路径：hwmon pwm-fan 的 pwm1 → MT7981 pwmchip duty_cycle
+find_pwm_path() {
+    local pwm
+    for pwm in /sys/class/hwmon/hwmon*/pwm1; do
+        [ -w "$pwm" ] || continue
+        case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
+            pwmfan|pwm-fan) echo "$pwm"; return 0 ;;
+        esac
+    done
+    for duty in /sys/class/pwm/pwmchip*/pwm*/duty_cycle; do
+        [ -w "$duty" ] && { echo "$duty"; return 0; }
+    done
+    return 1
+}
+
+# 等待软 PWM sysfs 节点就绪（模块加载后由内核创建，通常毫秒级）
+wait_duty_node() {
+    local i=0
+    while [ "$i" -lt 10 ]; do
+        [ -w "$DUTY_PATH" ] && return 0
+        sleep 0.2
+        i=$((i + 1))
+    done
+    return 1
+}
+
 load_softpwm_driver() {
     local gpio freq
     config_get gpio settings fan_gpio "540"
@@ -44,24 +70,8 @@ load_softpwm_driver() {
     printMsg "soft-PWM driver loaded (GPIO=$gpio, period=$freq us)"
 
     # 立即写入初始占空比让风扇转起来，不等 Rust 守护进程首轮循环
-    sleep 1
-    [ -w "$DUTY_PATH" ] && echo 64 > "$DUTY_PATH" 2>/dev/null
-}
-
-find_pwm_path() {
-    local pwm
-    for pwm in /sys/class/hwmon/hwmon*/pwm1; do
-        [ -w "$pwm" ] || continue
-        case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
-            pwmfan|pwm-fan) echo "$pwm"; return 0 ;;
-        esac
-    done
-    # AP3000M MT7981 hardware PWM fallback. Its exported interface accepts
-    # the same 0..255 values used by the LuCI controls.
-    for duty in /sys/class/pwm/pwmchip*/pwm*/duty_cycle; do
-        [ -w "$duty" ] && { echo "$duty"; return 0; }
-    done
-    return 1
+    wait_duty_node || { printMsg "duty_cycle node not ready"; return 1; }
+    echo 64 > "$DUTY_PATH" 2>/dev/null
 }
 
 start_service() {
@@ -108,12 +118,15 @@ start_service() {
 
 stop_service() {
     local pwm
-    for pwm in /sys/class/hwmon/hwmon*/pwm1; do
-        [ -w "$pwm" ] || continue
-        case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
-            pwmfan|pwm-fan) echo 64 > "$pwm" 2>/dev/null; break ;;
-        esac
-    done
+
+    # 硬件 PWM：回退到最低转速 64（与 README 描述一致），
+    # 同时覆盖 hwmon pwm-fan 与 MT7981 pwmchip duty_cycle 两条路径
+    pwm=$(find_pwm_path)
+    if [ -n "$pwm" ]; then
+        echo 64 > "$pwm" 2>/dev/null
+    fi
+
+    # 软件 PWM：停转（输出低电平）
     if [ -w "$DUTY_PATH" ]; then
         echo 0 > "$DUTY_PATH" 2>/dev/null
     fi

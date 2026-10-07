@@ -103,6 +103,14 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/airpi-fancontrol
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/airpi-fancontrol/fancontrol.js \
 		$(1)/www/luci-static/resources/view/airpi-fancontrol/fancontrol.js
+
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/airpi-fancontrol
+	$(CP) ./htdocs/luci-static/resources/airpi-fancontrol/* \
+		$(1)/www/luci-static/resources/airpi-fancontrol/
+	$(CP) ./htdocs/luci-static/resources/airpi-fancontrol/components \
+		$(1)/www/luci-static/resources/airpi-fancontrol/
+	$(CP) ./htdocs/luci-static/resources/airpi-fancontrol/styles \
+		$(1)/www/luci-static/resources/airpi-fancontrol/
 endef
 
 define Package/$(PKG_NAME)/postinst

@@ -7,7 +7,8 @@
 		"write": {
 			"uci": [ "airpi-fan" ],
 			"file": {
-				"/usr/bin/airpi-fanctl.sh": [ "exec" ]
+				"/usr/bin/airpi-fanctl.sh": [ "exec" ],
+				"/etc/init.d/airpi-fancontrol": [ "exec" ]
 			}
 		}
 	}
