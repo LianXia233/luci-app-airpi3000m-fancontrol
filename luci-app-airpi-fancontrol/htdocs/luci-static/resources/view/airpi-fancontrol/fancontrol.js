@@ -375,17 +375,22 @@ var CSS = String('') +
 	'.ap-panel{display:none;}\n' +
 	'.ap-panel.is-active{display:grid;gap:var(--ap-gap);align-content:start;animation:ap-fade .2s var(--ap-ease);}\n' +
 	'@keyframes ap-fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}\n' +
-	'.ap-col{display:grid;gap:var(--ap-gap);align-content:start;}\n' +
-	'.ap-card{border:1px solid var(--ap-border);border-radius:var(--ap-radius);' +
+	/* 概览用 12 列栅格而不是左右两列：两列布局下左列只放得下一张风扇卡，
+	   右列四张卡堆得很高，左下必然出现整块空洞。栅格里同一行的卡片由
+	   align-items:stretch 拉到等高，空洞消失，且所有卡片共享同一左右边线。 */
+	'.ap-grid{display:grid;gap:var(--ap-gap);grid-template-columns:repeat(12,1fr);align-items:stretch;}\n' +
+	'.ap-c4{grid-column:span 4;}\n' +
+	'.ap-c8{grid-column:span 8;}\n' +
+	'.ap-c12{grid-column:span 12;}\n' +
+	'.ap-card{display:flex;flex-direction:column;border:1px solid var(--ap-border);border-radius:var(--ap-radius);' +
 	'background:var(--ap-bg);box-shadow:var(--ap-shadow);overflow:hidden;}\n' +
 	'.ap-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;' +
 	'padding:12px 16px;border-bottom:1px solid var(--ap-border);}\n' +
 	'.ap-card-title{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;' +
 	'letter-spacing:.04em;text-transform:uppercase;color:var(--ap-text-muted);}\n' +
 	'.ap-card-meta{font-size:11.5px;color:var(--ap-text-dim);display:flex;align-items:center;gap:8px;}\n' +
-	'.ap-card-body{padding:16px;}\n' +
+	'.ap-card-body{padding:16px;flex:1 1 auto;}\n' +
 	'.ap-icon{display:inline-flex;align-items:center;color:var(--ap-accent);flex:0 0 auto;}\n' +
-	'.ap-split{display:grid;gap:var(--ap-gap);grid-template-columns:300px 1fr;}\n' +
 	'.ap-duo{display:grid;gap:var(--ap-gap);grid-template-columns:1fr 1fr;}\n' +
 	'.ap-stage{width:100%;max-width:230px;margin:0 auto;color:var(--ap-accent);}\n' +
 	'.ap-fan-svg{width:100%;height:auto;display:block;}\n' +
@@ -520,7 +525,7 @@ var CSS = String('') +
 	'.ap-form .cbi-button{border-radius:10px!important;font-weight:650!important;}\n' +
 	'.ap-form .cbi-value-error,.ap-form .cbi-value .error{color:var(--ap-danger)!important;}\n' +
 	'.ap-form .cbi-value .cbi-validate-message{font-size:11.5px!important;color:var(--ap-danger)!important;}\n' +
-	'@media (max-width:900px){.ap-split{grid-template-columns:1fr;}.ap-duo{grid-template-columns:1fr;}}\n' +
+	'@media (max-width:900px){.ap-c4,.ap-c8{grid-column:span 12;}.ap-duo{grid-template-columns:1fr;}}\n' +
 	'@media (max-width:640px){.ap-root{--ap-gap:11px;margin:8px auto 24px;}' +
 	'.ap-card-body{padding:13px;}.ap-form .cbi-value{display:block!important;}' +
 	'.ap-form .cbi-value-title{width:auto!important;min-width:0!important;padding-bottom:4px!important;}' +
@@ -1030,6 +1035,7 @@ return view.extend({
 		var fanCard = card({
 			title: '风扇运行状态',
 			icon: 'fan',
+			class: 'ap-c4',
 			meta: pill(_('未连接'), 'muted'),
 			body: [stage, E('div', { 'class': 'ap-readout' }, [this.refs.dutyBig, this.refs.dutyCap])]
 		});
@@ -1039,6 +1045,7 @@ return view.extend({
 		var runCard = card({
 			title: '控制链路',
 			icon: 'gauge',
+			class: 'ap-c8',
 			meta: pill(_('实时'), 'info'),
 			body: [this.refs.runRows]
 		});
@@ -1047,6 +1054,7 @@ return view.extend({
 		var alarmCard = card({
 			title: '告警与自检',
 			icon: 'alarm',
+			class: 'ap-c12',
 			body: [this.refs.alarmHost]
 		});
 
@@ -1054,7 +1062,8 @@ return view.extend({
 		var tempCard = card({
 			title: '温度来源',
 			icon: 'temp',
-			meta: E('span', {}, _('热源: —')),
+			class: 'ap-c12',
+			meta: E('span', {}, _('控制基准: —')),
 			body: [this.refs.tempChips]
 		});
 		this.refs.tempMeta = tempCard.querySelector('.ap-card-meta');
@@ -1063,6 +1072,7 @@ return view.extend({
 		var trendCard = card({
 			title: '温度与占空比趋势',
 			icon: 'curve',
+			class: 'ap-c12',
 			meta: pill(_('最近 %d 次采样').format(HISTORY_LIMIT), 'muted'),
 			body: [this.refs.trendHost, E('div', { 'class': 'ap-legend' }, [
 				E('span', {}, [E('i', { 'style': 'background:var(--ap-warn)' }), _('温度')]),
@@ -1074,14 +1084,20 @@ return view.extend({
 		var policyCard = card({
 			title: '当前生效策略',
 			icon: 'curve',
+			class: 'ap-c12',
 			body: [this.refs.policyHost]
 		});
 
-		var left = E('div', { 'class': 'ap-col' }, [fanCard]);
-		var right = E('div', { 'class': 'ap-col' }, [alarmCard, runCard, tempCard, trendCard]);
-		this.panels.overview.appendChild(E('div', { 'class': 'ap-split' }, [left, right]));
-		/* 策略卡与其余卡片同宽对齐：放在分栏之外，占满版心 */
-		this.panels.overview.appendChild(policyCard);
+		/* 单张 12 列栅格：风扇卡与告警卡同行分占 4/8，其余整行，
+		   同一行卡片由 stretch 拉到等高，不会出现左列下方的大片空洞 */
+		this.panels.overview.appendChild(E('div', { 'class': 'ap-grid' }, [
+			alarmCard,
+			fanCard,
+			runCard,
+			tempCard,
+			policyCard,
+			trendCard
+		]));
 	},
 
 	buildControl: function() {
@@ -1200,7 +1216,9 @@ return view.extend({
 			body: [this.refs.samplingState]
 		});
 
-		this.panels.sensors.appendChild(E('div', {}, [tableCard, stateCard]));
+		/* 两张卡直接作为面板栅格的子元素，间距由 gap 统一控制 */
+		this.panels.sensors.appendChild(tableCard);
+		this.panels.sensors.appendChild(stateCard);
 	},
 
 	onCurvePanelReady: function(panel) {
