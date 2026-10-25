@@ -8,1723 +8,1917 @@
 'require dom';
 
 /*
- * luci-app-airpi-fancontrol - Pure Glacier Glass (v12.0.0 Merged Cockpit)
- * 7-Blade Ceramic Impeller: rotor speed & airflow ripples driven by real duty.
+ * luci-app-airpi-fancontrol — AirPi AP3000M 温控工作台 (v7.0.0)
+ *
+ * 设计约束:
+ *   - 只展示后端真实提供的数据。硬件没有转速(tach)反馈，因此界面上不出现
+ *     "RPM / dBA / CFM"这类推算值，只有设定占空比与接口实测回读。
+ *   - 单一轮询回调；容器离开文档时主动 poll.remove，站内导航不残留定时器。
+ *   - 不使用 requestAnimationFrame 常驻动画;风扇转动用 CSS 动画，切离页面暂停。
+ *   - 动态文本一律走 E()/textContent，不用 innerHTML 拼接设备返回值。
  */
 
 var CTL = '/usr/bin/airpi-fanctl.sh';
+var CONFIG = 'airpi-fan';
+var SECTION = 'settings';
+var POLL_INTERVAL = 5;
+var HISTORY_LIMIT = 72;
+
+/* 与后端 Config::default() 一致的出厂值，恢复默认时使用 */
+var DEFAULTS = {
+	fan_driver: 'auto', fan_gpio: '540', fan_freq: '15000',
+	temp_high: '85', duty_high: '255',
+	temp_mid: '60', duty_mid: '192',
+	temp_low: '50', duty_low: '128',
+	duty_idle: '64',
+	auto_interval: '8', hysteresis: '2', min_hold: '30',
+	temp_crit: '95', crit_guard: '1', fail_duty: '255', fail_count: '3',
+	stop_duty: '64',
+	src_cpu: '1', src_phy: '1', src_wifi: '1', src_modem: '1',
+	slow_interval: '30', log_level: '2'
+};
+
+var TABS = [
+	{ id: 'overview', label: '运行概览' },
+	{ id: 'control', label: '风扇控制' },
+	{ id: 'curve', label: '温控策略' },
+	{ id: 'sensors', label: '传感器与监控' },
+	{ id: 'advanced', label: '高级设置' }
+];
+
+var MODE_LABEL = {
+	auto: '智能温控',
+	manual: '手动档位',
+	stepless: '无级调速'
+};
+
+var SOURCE_LABEL = {
+	cpu: 'CPU 核心',
+	phy: '网络交换',
+	wifi: 'Wi-Fi 射频',
+	modem: '通信模组'
+};
 
 function ctl(args) {
 	return fs.exec(CTL, args);
 }
 
-function parseKV(s) {
-	var o = {};
-	String(s || '').split('\n').forEach(function(l) {
-		var i = l.indexOf('=');
+function parseKV(text) {
+	var out = {};
+	String(text == null ? '' : text).split('\n').forEach(function(line) {
+		var i = line.indexOf('=');
 		if (i > 0)
-			o[l.slice(0, i).trim()] = l.slice(i + 1).trim();
+			out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
 	});
-	return o;
+	return out;
 }
 
-var CSS = `
-:root {
-  --gf-blue: #0284c7;
-  --gf-blue-light: #e0f2fe;
-  --gf-blue-glow: rgba(2, 132, 199, 0.22);
-  
-  --gf-bg-glass: rgba(255, 255, 255, 0.76);
-  --gf-bg-inner: rgba(248, 250, 252, 0.7);
-  --gf-border: rgba(255, 255, 255, 0.95);
-  --gf-border-subtle: rgba(226, 232, 240, 0.85);
-  
-  --gf-text-head: #0f172a;
-  --gf-text-sub: #475569;
-  --gf-text-dim: #94a3b8;
-  --gf-shadow: 0 12px 32px rgba(15, 23, 42, 0.05), 0 2px 6px rgba(15, 23, 42, 0.03);
-  --gf-inner-light: inset 0 1px 2px rgba(255, 255, 255, 0.95);
-  --gf-radius: 24px;
+function num(value, fallback) {
+	var n = parseInt(value, 10);
+	return isNaN(n) ? fallback : n;
 }
 
-.gf-container {
-  max-width: 960px;
-  margin: 12px auto 40px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
-  color: var(--gf-text-head);
-  letter-spacing: -0.01em;
-  user-select: none;
+function flt(value, fallback) {
+	var n = parseFloat(value);
+	return isNaN(n) ? fallback : n;
 }
 
-/* 顶部白毛玻璃导航 */
-.gf-nav {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--gf-bg-glass);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid var(--gf-border);
-  border-radius: var(--gf-radius);
-  padding: 16px 24px;
-  margin-bottom: 20px;
-  box-shadow: var(--gf-shadow), var(--gf-inner-light);
-}
-.gf-brand {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-.gf-logo-badge {
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #ffffff, #e0f2fe);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--gf-blue);
-  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.12), inset 0 1px 1px #fff;
-  border: 1px solid #ffffff;
-}
-.gf-logo-badge svg { width: 24px; height: 24px; }
-.gf-title { font-size: 18px; font-weight: 800; color: var(--gf-text-head); }
-.gf-subtitle { font-size: 12px; color: var(--gf-text-sub); margin-top: 2px; }
-
-.gf-status-tag {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  padding: 6px 14px;
-  border-radius: 99px;
-  font-size: 11.5px;
-  font-weight: 700;
-  color: #059669;
-}
-.gf-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #10b981;
-  box-shadow: 0 0 8px #10b981;
-  animation: gf-breathe 2s infinite ease-in-out;
+/* 状态里的 m℃ 字段: -1 表示无有效读数，不能当成 0 ℃ */
+function mcToC(mc) {
+	var n = num(mc, -1);
+	return n > 0 ? n / 1000 : null;
 }
 
-/* 主座舱双列排版 */
-.gf-cockpit-grid {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 20px;
+function agoText(seconds) {
+	if (seconds == null || seconds < 0)
+		return _('尚无数据');
+	if (seconds < 2)
+		return _('刚刚');
+	if (seconds < 60)
+		return _('%d 秒前').format(seconds);
+	if (seconds < 3600)
+		return _('%d 分钟前').format(Math.floor(seconds / 60));
+	return _('%d 小时前').format(Math.floor(seconds / 3600));
 }
 
-/* 左侧：风扇涡轮卡片 */
-.gf-fan-card {
-  background: var(--gf-bg-glass);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid var(--gf-border);
-  border-radius: var(--gf-radius);
-  padding: 28px 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  box-shadow: var(--gf-shadow), var(--gf-inner-light);
+function dutyPct(duty) {
+	return Math.round((num(duty, 0) / 255) * 100);
 }
 
-.gf-stage {
-  width: 100%;
-  max-width: 320px;
-  aspect-ratio: 1 / 1;
-  height: auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-}
-.gf-svg-fan {
-  width: 100%;
-  height: 100%;
+function toneForCelsius(c, warn, hot) {
+	if (c == null)
+		return 'idle';
+	if (c >= hot)
+		return 'danger';
+	if (c >= warn)
+		return 'warning';
+	if (c >= warn - 15)
+		return 'ok';
+	return 'good';
 }
 
-/* 核心无偏心旋转动画 */
-.gf-rotor {
-  transform-origin: 0 0;
-  animation: gf-spin var(--rotor-dur, 0s) linear infinite;
-  will-change: transform;
-}
-.gf-rotor.idle { animation-play-state: paused; }
+/* ---------------------------- 图标 (内联 SVG) ---------------------------- */
 
-@keyframes gf-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-@keyframes gf-breathe {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.85); }
+function icon(paths, size) {
+	var s = size || 20;
+	return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" ' +
+		'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" ' +
+		'stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
 }
 
-/* 遥测读数群 */
-.gf-telemetry-hud {
-  width: 100%;
-  text-align: center;
-  margin-top: 18px;
-}
-.gf-hero-pct {
-  font-size: 44px;
-  font-weight: 900;
-  line-height: 1;
-  letter-spacing: -1.5px;
-  color: var(--gf-text-head);
-  font-feature-settings: "tnum";
-}
-.gf-hero-desc {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--gf-blue);
-  margin-top: 8px;
-  letter-spacing: 0.3px;
-}
-.gf-chips-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin-top: 18px;
-  width: 100%;
-}
-.gf-chip {
-  background: var(--gf-bg-inner);
-  border: 1px solid var(--gf-border-subtle);
-  border-radius: 14px;
-  padding: 8px 6px;
-  text-align: center;
-}
-.gf-chip-lbl { font-size: 10px; font-weight: 600; color: var(--gf-text-dim); }
-.gf-chip-val { font-size: 12.5px; font-weight: 800; color: var(--gf-text-head); margin-top: 2px; }
-
-/* 右侧控制区 */
-.gf-control-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.gf-panel {
-  background: var(--gf-bg-glass);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid var(--gf-border);
-  border-radius: var(--gf-radius);
-  padding: 24px;
-  box-shadow: var(--gf-shadow), var(--gf-inner-light);
-}
-.gf-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-.gf-panel-title {
-  font-size: 13px;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--gf-text-sub);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.gf-panel-title svg { width: 16px; height: 16px; color: var(--gf-blue); }
-
-/* 档位矩阵 */
-.gf-modes-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-}
-.gf-btn-mode {
-  background: var(--gf-bg-inner) !important;
-  border: 1px solid var(--gf-border-subtle) !important;
-  border-radius: 16px !important;
-  padding: 14px 8px !important;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  outline: none;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  color: var(--gf-text-head) !important;
-  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.02);
-}
-.gf-btn-mode svg {
-  width: 22px;
-  height: 22px;
-  color: var(--gf-text-sub);
-  transition: transform 0.2s, color 0.2s;
-}
-.gf-btn-title { font-size: 13px; font-weight: 700; }
-.gf-btn-meta { font-size: 10px; color: var(--gf-text-dim); }
-
-.gf-btn-mode:hover {
-  transform: translateY(-2px);
-  background: #ffffff !important;
-  border-color: rgba(2, 132, 199, 0.3) !important;
-  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.08);
-}
-.gf-btn-mode:hover svg { color: var(--gf-blue); transform: scale(1.1); }
-.gf-btn-mode.active {
-  background: linear-gradient(135deg, #0284c7, #0ea5e9) !important;
-  border-color: transparent !important;
-  color: #ffffff !important;
-  box-shadow: 0 8px 20px var(--gf-blue-glow) !important;
-}
-.gf-btn-mode.active svg,
-.gf-btn-mode.active .gf-btn-meta { color: rgba(255, 255, 255, 0.9); }
-
-/* 无极滑块 */
-.gf-slider-box {
-  display: none;
-  margin-top: 16px;
-  padding: 16px 18px;
-  background: var(--gf-bg-inner);
-  border: 1px solid var(--gf-border-subtle);
-  border-radius: 18px;
-}
-.gf-slider-box.active { display: block; animation: gf-fade 0.2s ease; }
-.gf-slider-head {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--gf-text-sub);
-  margin-bottom: 12px;
-}
-.gf-slider {
-  width: 100%;
-  -webkit-appearance: none;
-  appearance: none;
-  height: 7px;
-  border-radius: 99px;
-  background: #e2e8f0;
-  outline: none;
-  cursor: pointer;
-}
-.gf-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #ffffff;
-  border: 3px solid #0284c7;
-  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.3);
-  cursor: pointer;
-  transition: transform 0.15s;
-}
-.gf-slider::-webkit-slider-thumb:hover { transform: scale(1.18); }
-
-/* 传感器矩阵 */
-.gf-sensors-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
-}
-.gf-sensor-card {
-  background: var(--gf-bg-inner);
-  border: 1px solid var(--gf-border-subtle);
-  border-radius: 16px;
-  padding: 12px 14px;
-  position: relative;
-  transition: border-color 0.25s, box-shadow 0.25s;
-}
-.gf-sensor-card.hotspot {
-  border-color: rgba(2, 132, 199, 0.4);
-  background: #ffffff;
-  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.08);
-}
-.gf-sc-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--gf-text-sub);
-}
-.gf-sc-tag {
-  font-size: 9px;
-  font-weight: 800;
-  padding: 1px 5px;
-  border-radius: 99px;
-  background: var(--gf-blue-light);
-  color: var(--gf-blue);
-}
-.gf-sc-val {
-  font-size: 22px;
-  font-weight: 900;
-  margin-top: 6px;
-  letter-spacing: -0.5px;
-  font-feature-settings: "tnum";
-}
-.gf-sc-unit { font-size: 12px; font-weight: normal; color: var(--gf-text-dim); }
-.gf-sc-bar {
-  width: 100%;
-  height: 4px;
-  background: #e2e8f0;
-  border-radius: 99px;
-  margin-top: 8px;
-  overflow: hidden;
-}
-.gf-sc-fill {
-  height: 100%;
-  width: 0%;
-  border-radius: 99px;
-  transition: width 0.5s ease, background 0.4s;
-}
-
-@keyframes gf-fade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-
-@media (max-width: 860px) {
-  .gf-cockpit-grid { grid-template-columns: 1fr; }
-  .gf-fan-card { padding: 24px 16px; }
-  .gf-sensors-grid { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 520px) {
-  .gf-modes-grid { grid-template-columns: repeat(2, 1fr); }
-}
-.gf-cfg-section {
-  margin-top: 22px;
-  background: var(--gf-bg-glass);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid var(--gf-border);
-  border-radius: var(--gf-radius);
-  padding: 22px 18px 18px;
-  box-shadow: var(--gf-shadow), var(--gf-inner-light);
-}
-.gf-cfg-head {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--gf-border);
-}
-.gf-cfg-title {
-  font-size: 15px;
-  font-weight: 800;
-  color: var(--gf-text-title);
-  letter-spacing: 0.5px;
-}
-.gf-cfg-sub {
-  font-size: 11px;
-  color: var(--gf-text-dim);
-}
-.gf-cfg-error {
-  padding: 14px;
-  color: #ef4444;
-  font-size: 12px;
-}
-
-`;
-
-var SVG_WRAP = function(inner) {
-	return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>';
+var ICON = {
+	fan: '<circle cx="12" cy="12" r="9.2"/><path d="M12 12c0-3.6 1.4-6.4 4.6-6.9 1.5-.2 2.3 1.2 1.6 2.6-.9 1.9-3 3-6.2 3.3z"/><path d="M12 12c-3.1 1.8-4.5 4.6-3.3 7.6.6 1.4 2.3 1.3 3-.1.9-1.9.6-4.2-.6-7z" transform="rotate(-120 12 12)"/><path d="M12 12c-3.1 1.8-4.5 4.6-3.3 7.6.6 1.4 2.3 1.3 3-.1.9-1.9.6-4.2-.6-7z" transform="rotate(120 12 12)"/><path d="M12 12c-3.1 1.8-4.5 4.6-3.3 7.6.6 1.4 2.3 1.3 3-.1.9-1.9.6-4.2-.6-7z"/><circle cx="12" cy="12" r="1.5"/>',
+	gauge: '<path d="M12 21a9 9 0 1 1 9-9"/><path d="M12 12l4.5-3.5"/><circle cx="12" cy="12" r="1.2"/>',
+	temp: '<path d="M14 14.8V4.5a2.5 2.5 0 0 0-5 0v10.3a4.5 4.5 0 1 0 5 0z"/>',
+	slider: '<line x1="4" y1="20" x2="4" y2="12"/><line x1="4" y1="8" x2="4" y2="4"/><line x1="12" y1="20" x2="12" y2="14"/><line x1="12" y1="10" x2="12" y2="4"/><line x1="20" y1="20" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="4"/><line x1="1.5" y1="12" x2="6.5" y2="12"/><line x1="9.5" y1="8" x2="14.5" y2="8"/><line x1="17.5" y1="16" x2="22.5" y2="16"/>',
+	curve: '<path d="M3 19h18"/><path d="M3 19V5"/><path d="M6 16h4v-4h5V8h6"/>',
+	chip: '<rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M19 9h3M19 15h3M2 9h3M2 15h3"/>',
+	wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.1-2.1z"/>',
+	alarm: '<path d="M12 3a6 6 0 0 0-6 6c0 3-1 4.5-2 5.5h16c-1-1-2-2.5-2-5.5a6 6 0 0 0-6-6z"/><path d="M10 19a2 2 0 0 0 4 0"/>',
+	refresh: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>',
+	power: '<path d="M12 3v9"/><path d="M6.4 6.4a8 8 0 1 0 11.2 0"/>',
+	file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'
 };
 
-var ICONS = {
-	fan: SVG_WRAP('<circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/><circle cx="12" cy="12" r="3"/>'),
-	silent: SVG_WRAP('<path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/><path d="M7 12h3l2-5 2 10 2-5h3"/>'),
-	cruise: SVG_WRAP('<path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2"/><path d="M9.6 4.6A2 2 0 1 1 11 8H2"/><path d="M12.6 19.4A2 2 0 1 0 14 16H2"/>'),
-	turbo: SVG_WRAP('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>'),
-	max: SVG_WRAP('<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>'),
-	smart: SVG_WRAP('<rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M12 1v3"/><path d="M12 20v3"/><path d="M20 12h3"/><path d="M1 12h3"/>'),
-	slider: SVG_WRAP('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>'),
-	temp: SVG_WRAP('<path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>'),
-	gear: SVG_WRAP('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>')
-};
+/* ------------------------------ DOM 构造器 ------------------------------ */
 
-// v11: AirPi Pure Ceramic 7 叶陶瓷扇叶 SVG（用户提供，(300,300) 精确圆心几何）
-function renderSolidGlacierSVG() {
-	return `<svg id="pureAirPiFanSvg" viewBox="0 0 600 600" class="gf-svg-fan" xmlns="http://www.w3.org/2000/svg">
-              <defs><style>
-        @keyframes airpiRotorSpin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-        @keyframes windWavePulse {
-          0% { transform: scale(0.96); opacity: 0.2; }
-          50% { opacity: 0.65; }
-          100% { transform: scale(1.04); opacity: 0.05; }
-        }
-        #fanRotorGroup {
-          transform-origin: 300px 300px;
-          animation: airpiRotorSpin 0.75s linear infinite reverse;
-          will-change: transform;
-        }
-        .wind-wave {
-          transform-origin: 300px 300px;
-          animation: windWavePulse 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-        }
-      </style>
-                <!-- Outer Beveled Duct Rim Gradient -->
-                <linearGradient id="ductRimGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stop-color="#ffffff"/>
-                  <stop offset="45%" stop-color="#e2e8f0"/>
-                  <stop offset="70%" stop-color="#cbd5e1"/>
-                  <stop offset="100%" stop-color="#ffffff"/>
-                </linearGradient>
-
-                <!-- Recessed Frosted Glass Air Well Gradient -->
-                <radialGradient id="airWellFrosted" cx="50%" cy="50%" r="50%">
-                  <stop offset="60%" stop-color="#ffffff" stop-opacity="0.95"/>
-                  <stop offset="82%" stop-color="#f8fafc" stop-opacity="0.9"/>
-                  <stop offset="94%" stop-color="#e2e8f0" stop-opacity="0.75"/>
-                  <stop offset="100%" stop-color="#cbd5e1" stop-opacity="0.6"/>
-                </radialGradient>
-
-                <!-- 1. Ceramic Matte White Blade Surface Multi-Stop Gradient -->
-                <linearGradient id="bladeMatteWhite" x1="20%" y1="0%" x2="80%" y2="100%">
-                  <stop offset="0%" stop-color="#ffffff"/>
-                  <stop offset="25%" stop-color="#f8fafc"/>
-                  <stop offset="60%" stop-color="#eef3f9"/>
-                  <stop offset="85%" stop-color="#e2e8f0"/>
-                  <stop offset="100%" stop-color="#cbd5e1"/>
-                </linearGradient>
-
-                <!-- 2. Aerodynamic Leading-Edge Crisp White Reflection Bevel -->
-                <linearGradient id="bladeHighlight" x1="0%" y1="0%" x2="100%" y2="35%">
-                  <stop offset="0%" stop-color="#ffffff" stop-opacity="1"/>
-                  <stop offset="45%" stop-color="#ffffff" stop-opacity="0.9"/>
-                  <stop offset="100%" stop-color="#e2e8f0" stop-opacity="0.3"/>
-                </linearGradient>
-
-                <!-- 3. Integrated Vector Under-Blade Ambient Occlusion Gradient (Replaces heavy feGaussianBlur) -->
-                <linearGradient id="bladeUnderShadowGrad" x1="15%" y1="0%" x2="85%" y2="100%">
-                  <stop offset="0%" stop-color="#94a3b8" stop-opacity="0.38"/>
-                  <stop offset="60%" stop-color="#64748b" stop-opacity="0.22"/>
-                  <stop offset="100%" stop-color="#475569" stop-opacity="0"/>
-                </linearGradient>
-
-                <!-- Central Spindle Ceramic White Lathe Brushed Hub Gradient -->
-                <radialGradient id="ceramicHubGrad" cx="36%" cy="36%" r="64%">
-                  <stop offset="0%" stop-color="#ffffff"/>
-                  <stop offset="38%" stop-color="#f8fafc"/>
-                  <stop offset="78%" stop-color="#e2e8f0"/>
-                  <stop offset="100%" stop-color="#cbd5e1"/>
-                </radialGradient>
-
-                <!-- Outer Collar Shadow for Spindle Hub -->
-                <linearGradient id="hubCollarGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stop-color="#e2e8f0"/>
-                  <stop offset="100%" stop-color="#94a3b8"/>
-                </linearGradient>
-
-                <!-- Single High-Contrast 7-Blade Master Model (Rigorous (300, 300) Center Geometry) -->
-                <g id="airpiBlade">
-                  <!-- Under-Blade Integrated Vector Shadow: Rotates seamlessly with zero performance loss -->
-                  <path class="blade-shadow-path" d="M 284 246 C 248 195, 178 148, 144 116 C 172 88, 234 76, 298 84 C 314 126, 320 186, 314 248 Z" fill="url(#bladeUnderShadowGrad)"/>
-
-                  <!-- Main Ceramic Blade Sculpted Airfoil Body -->
-                  <path d="M 286 244 C 250 196, 182 150, 148 118 C 174 92, 232 78, 294 86 C 310 128, 316 186, 310 246 Z" fill="url(#bladeMatteWhite)" stroke="#cbd5e1" stroke-width="0.85"/>
-
-                  <!-- Aerodynamic Leading-Edge Specular Bevel Stripe -->
-                  <path d="M 148 118 C 174 92, 232 78, 294 86 C 264 94, 202 104, 148 118 Z" fill="url(#bladeHighlight)"/>
-
-                  <!-- Camber Airfoil Trailing Edge Contrast Edge -->
-                  <path d="M 286 244 C 250 196, 182 150, 148 118" fill="none" stroke="#94a3b8" stroke-width="0.75" stroke-opacity="0.8"/>
-
-                  <!-- Inner Surface Aerodynamic Flow Ridge Highlight -->
-                  <path d="M 276 220 C 246 172, 196 138, 160 122" fill="none" stroke="#ffffff" stroke-width="0.85" stroke-opacity="0.9"/>
-                </g>
-              </defs>
-
-              <!-- 1. Outer Square Base Chassis Frame -->
-              <rect x="25" y="25" width="550" height="550" rx="52" fill="none" stroke="url(#ductRimGrad)" stroke-width="2.5"/>
-
-              <!-- 4 Corner Soft Silicone Anti-Vibration Pads with AirPi Tech Cyan Rivets -->
-              <g id="cornerMounts">
-                <!-- Top-Left -->
-                <rect x="46" y="46" width="52" height="52" rx="16" fill="#ffffff" fill-opacity="0.9" stroke="#e2e8f0" stroke-width="1.5"/>
-                <circle cx="72" cy="72" r="6" fill="#38bdf8" fill-opacity="0.9"/>
-
-                <!-- Top-Right -->
-                <rect x="502" y="46" width="52" height="52" rx="16" fill="#ffffff" fill-opacity="0.9" stroke="#e2e8f0" stroke-width="1.5"/>
-                <circle cx="528" cy="72" r="6" fill="#38bdf8" fill-opacity="0.9"/>
-
-                <!-- Bottom-Left -->
-                <rect x="46" y="502" width="52" height="52" rx="16" fill="#ffffff" fill-opacity="0.9" stroke="#e2e8f0" stroke-width="1.5"/>
-                <circle cx="72" cy="528" r="6" fill="#38bdf8" fill-opacity="0.9"/>
-
-                <!-- Bottom-Right -->
-                <rect x="502" y="502" width="52" height="52" rx="16" fill="#ffffff" fill-opacity="0.9" stroke="#e2e8f0" stroke-width="1.5"/>
-                <circle cx="528" cy="528" r="6" fill="#38bdf8" fill-opacity="0.9"/>
-              </g>
-
-              <!-- 2. Circular Frosted Glass Air Duct Bore (Centered precisely at 300, 300) -->
-              <circle cx="300" cy="300" r="236" fill="url(#airWellFrosted)" stroke="#ffffff" stroke-width="2.5"/>
-              <circle cx="300" cy="300" r="228" fill="none" stroke="#e2e8f0" stroke-width="1.5"/>
-              <circle cx="300" cy="300" r="220" fill="none" stroke="#38bdf8" stroke-opacity="0.15" stroke-width="2"/>
-
-              <!-- 3. Rear Stator Airflow Straightening Guide Vanes (Static struts behind blades provide contrast) -->
-              <g id="statorVanesGroup" stroke="#cbd5e1" stroke-linecap="round" opacity="0.85">
-                <line x1="300" y1="300" x2="135" y2="135" stroke-width="7"/>
-                <line x1="300" y1="300" x2="465" y2="135" stroke-width="7"/>
-                <line x1="300" y1="300" x2="135" y2="465" stroke-width="7"/>
-                <line x1="300" y1="300" x2="465" y2="465" stroke-width="7"/>
-
-                <line x1="300" y1="300" x2="135" y2="135" stroke="#ffffff" stroke-width="3"/>
-                <line x1="300" y1="300" x2="465" y2="135" stroke="#ffffff" stroke-width="3"/>
-                <line x1="300" y1="300" x2="135" y2="465" stroke="#ffffff" stroke-width="3"/>
-                <line x1="300" y1="300" x2="465" y2="465" stroke="#ffffff" stroke-width="3"/>
-              </g>
-
-              <!-- Dynamic Airflow Ripple Rings (Soft Ice Cyan) -->
-              <g id="airflowRipples" class="wind-wave" pointer-events="none" style="opacity: 0.95;">
-                <circle cx="300" cy="300" r="195" fill="none" stroke="#0ea5e9" stroke-width="1.5" stroke-dasharray="28 56" opacity="0.45"/>
-                <circle cx="300" cy="300" r="150" fill="none" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="20 40" opacity="0.35"/>
-              </g>
-
-              <!-- ============================================================== -->
-              <!-- 4. ROTATING ROTOR ASSEMBLY (7 BLADES AT EXACT 51.42857° INTERVALS) -->
-              <!-- ============================================================== -->
-              <g id="fanRotorGroup" class="fan-rotor-animated reverse" style="--fan-duration: 0.75s;">
-
-                <!-- 7 Aerodynamic Sickle Blades (Formula: 360° / 7 = 51.42857°) -->
-                <!-- Blade 0 (0°) -->
-                <use href="#airpiBlade" transform="rotate(0, 300, 300)"/>
-                <!-- Blade 1 (51.43°) -->
-                <use href="#airpiBlade" transform="rotate(51.42857, 300, 300)"/>
-                <!-- Blade 2 (102.86°) -->
-                <use href="#airpiBlade" transform="rotate(102.85714, 300, 300)"/>
-                <!-- Blade 3 (154.29°) -->
-                <use href="#airpiBlade" transform="rotate(154.28571, 300, 300)"/>
-                <!-- Blade 4 (205.71°) -->
-                <use href="#airpiBlade" transform="rotate(205.71428, 300, 300)"/>
-                <!-- Blade 5 (257.14°) -->
-                <use href="#airpiBlade" transform="rotate(257.14285, 300, 300)"/>
-                <!-- Blade 6 (308.57°) -->
-                <use href="#airpiBlade" transform="rotate(308.57142, 300, 300)"/>
-
-                <!-- Central Spindle Hub Base Collar -->
-                <circle cx="300" cy="300" r="64" fill="url(#hubCollarGrad)" stroke="#cbd5e1" stroke-width="1.2"/>
-
-                <!-- Ceramic White Brushed Spindle Hub Body -->
-                <circle cx="300" cy="300" r="58" fill="url(#ceramicHubGrad)" stroke="#cbd5e1" stroke-width="1.5"/>
-
-                <!-- Concentric Precision Lathe Machine Micro-Rings -->
-                <circle cx="300" cy="300" r="48" fill="none" stroke="#94a3b8" stroke-opacity="0.3" stroke-width="0.8"/>
-                <circle cx="300" cy="300" r="36" fill="none" stroke="#94a3b8" stroke-opacity="0.35" stroke-width="0.8"/>
-                <circle cx="300" cy="300" r="26" fill="none" stroke="#ffffff" stroke-opacity="0.9" stroke-width="1"/>
-
-                <!-- AirPi Signature Minimalist Tech Light Ring (Cyan) -->
-                <circle cx="300" cy="300" r="19" fill="none" stroke="#0ea5e9" stroke-width="2.2" stroke-opacity="0.95"/>
-                <circle cx="300" cy="300" r="19" fill="none" stroke="#38bdf8" stroke-width="0.9" stroke-opacity="0.6"/>
-
-                <!-- Central Spindle Ceramic Pivot Jewel -->
-                <circle cx="300" cy="300" r="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.2"/>
-                <circle cx="298.2" cy="298.2" r="1.8" fill="#38bdf8" opacity="0.95"/>
-              </g>
-            </svg>`;
+function svgIcon(name, size) {
+	var host = E('span', { 'class': 'ap-icon' });
+	host.innerHTML = icon(ICON[name], size);
+	return host;
 }
 
-/* ================= 内联硬件总线设置视图（原独立子页） ================= */
+function card(opts) {
+	var head = null;
+	if (opts.title) {
+		head = E('div', { 'class': 'ap-card-head' }, [
+			E('div', { 'class': 'ap-card-title' }, [
+				opts.icon ? svgIcon(opts.icon, 16) : '',
+				E('span', {}, _(opts.title))
+			]),
+			opts.meta ? E('div', { 'class': 'ap-card-meta' }, opts.meta) : ''
+		]);
+	}
+	var body = E('div', { 'class': 'ap-card-body' }, opts.body || []);
+	return E('section', { 'class': 'ap-card' + (opts.class ? ' ' + opts.class : '') },
+		head ? [head, body] : [body]);
+}
+
+function statChip(label, value, tone) {
+	return E('div', { 'class': 'ap-chip' + (tone ? ' is-' + tone : '') }, [
+		E('div', { 'class': 'ap-chip-label' }, label),
+		E('div', { 'class': 'ap-chip-value' }, value)
+	]);
+}
+
+function pill(text, tone) {
+	return E('span', { 'class': 'ap-pill is-' + (tone || 'muted') }, text);
+}
+
+function rows(pairs) {
+	return E('div', { 'class': 'ap-dl' }, pairs.map(function(p) {
+		return E('div', { 'class': 'ap-dl-row' }, [
+			E('span', { 'class': 'ap-dl-key' }, p[0]),
+			E('span', { 'class': 'ap-dl-val' + (p[2] ? ' is-' + p[2] : '') }, p[1])
+		]);
+	}));
+}
+
+/* 风扇视觉: 静态扇叶 + CSS 动画，转速由实测占空比驱动 */
+function fanVisual() {
+	var host = E('div', { 'class': 'ap-stage' });
+	host.innerHTML = '' +
+		'<svg viewBox="0 0 200 200" class="ap-fan-svg" xmlns="http://www.w3.org/2000/svg">' +
+		'<defs>' +
+		'<linearGradient id="apBlade" x1="0" y1="0" x2="1" y2="1">' +
+		'<stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>' +
+		'<stop offset="55%" stop-color="currentColor" stop-opacity="0.32"/>' +
+		'<stop offset="100%" stop-color="currentColor" stop-opacity="0.14"/>' +
+		'</linearGradient>' +
+		'<path id="apBladeShape" d="M100 100 C 92 78 96 52 116 34 C 132 40 138 66 130 92 C 122 106 110 108 100 100 Z"/>' +
+		'</defs>' +
+		'<circle cx="100" cy="100" r="94" class="ap-duct"/>' +
+		'<circle cx="100" cy="100" r="86" class="ap-duct-inner"/>' +
+		'<g class="ap-struts">' +
+		'<line x1="100" y1="100" x2="34" y2="34"/><line x1="100" y1="100" x2="166" y2="34"/>' +
+		'<line x1="100" y1="100" x2="34" y2="166"/><line x1="100" y1="100" x2="166" y2="166"/>' +
+		'</g>' +
+		'<g class="ap-rotor">' +
+		'<use href="#apBladeShape"/><use href="#apBladeShape" transform="rotate(72 100 100)"/>' +
+		'<use href="#apBladeShape" transform="rotate(144 100 100)"/>' +
+		'<use href="#apBladeShape" transform="rotate(216 100 100)"/>' +
+		'<use href="#apBladeShape" transform="rotate(288 100 100)"/>' +
+		'</g>' +
+		'<circle cx="100" cy="100" r="21" class="ap-hub"/>' +
+		'<circle cx="100" cy="100" r="7" class="ap-hub-dot"/>' +
+		'</svg>';
+	return host;
+}
+
+/* 温控曲线阶梯图 */
+function curveChart(cfg) {
+	var lo = 20, hi = 120;
+	function x(c) {
+		return 12 + ((c - lo) / (hi - lo)) * 268;
+	}
+	function y(duty) {
+		return 92 - (duty / 255) * 76;
+	}
+	var pts = [
+		[lo, cfg.duties[0]],
+		[cfg.temp_low, cfg.duties[1]],
+		[cfg.temp_mid, cfg.duties[2]],
+		[cfg.temp_high, cfg.duties[3]],
+		[hi, cfg.duties[3]]
+	];
+	var d = 'M ' + x(pts[0][0]).toFixed(1) + ' ' + y(pts[0][1]).toFixed(1);
+	pts.slice(1).forEach(function(p) {
+		d += ' L ' + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1);
+		d += ' L ' + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1);
+	});
+	var svg = E('svg', {
+		'viewBox': '0 0 292 104', 'class': 'ap-chart', 'preserveAspectRatio': 'none',
+		'role': 'img', 'aria-label': _('温控曲线预览')
+	});
+	svg.innerHTML = '<g class="ap-chart-grid">' +
+		'<line x1="12" y1="16" x2="280" y2="16"/><line x1="12" y1="54" x2="280" y2="54"/>' +
+		'<line x1="12" y1="92" x2="280" y2="92"/>' +
+		'<text x="12" y="12">100%</text><text x="12" y="50">50%</text>' +
+		'</g>' +
+		'<path class="ap-chart-line" d="' + d + '"/>' +
+		'<line class="ap-chart-crit" x1="' + x(cfg.temp_crit).toFixed(1) + '" y1="14" x2="' +
+		x(cfg.temp_crit).toFixed(1) + '" y2="92"/>' +
+		'<g class="ap-chart-marks">' +
+		[cfg.temp_low, cfg.temp_mid, cfg.temp_high].map(function(t) {
+			return '<line x1="' + x(t).toFixed(1) + '" y1="92" x2="' + x(t).toFixed(1) + '" y2="98"/>' +
+				'<text x="' + x(t).toFixed(1) + '" y="104" text-anchor="middle">' + t + '</text>';
+		}).join('') +
+		'</g>' +
+		'<circle class="ap-chart-now" cx="' + x(cfg.now).toFixed(1) + '" cy="' +
+		y(cfg.nowDuty).toFixed(1) + '" r="3.5"/>';
+	return svg;
+}
+
+/* 温度与占空比历史趋势，数据全部来自实际轮询 */
+function trendChart(history) {
+	if (history.length < 2)
+		return E('div', { 'class': 'ap-chart-empty' }, _('正在积累采样数据…'));
+	var lo = 20, hi = 110;
+	var n = history.length;
+	function px(i) {
+		return (i / (n - 1)) * 280 + 6;
+	}
+	function pyTemp(c) {
+		return 92 - ((Math.min(Math.max(c, lo), hi) - lo) / (hi - lo)) * 76;
+	}
+	function pyDuty(d) {
+		return 92 - (Math.min(Math.max(d, 0), 255) / 255) * 76;
+	}
+	var tempPts = [], dutyPts = [];
+	history.forEach(function(s, i) {
+		if (s.temp != null)
+			tempPts.push(px(i).toFixed(1) + ',' + pyTemp(s.temp).toFixed(1));
+		dutyPts.push(px(i).toFixed(1) + ',' + pyDuty(s.duty).toFixed(1));
+	});
+	var svg = E('svg', {
+		'viewBox': '0 0 292 104', 'class': 'ap-chart', 'preserveAspectRatio': 'none',
+		'role': 'img', 'aria-label': _('温度与占空比趋势')
+	});
+	svg.innerHTML = '<g class="ap-chart-grid">' +
+		'<line x1="6" y1="16" x2="286" y2="16"/><line x1="6" y1="54" x2="286" y2="54"/>' +
+		'<line x1="6" y1="92" x2="286" y2="92"/>' +
+		'<text x="6" y="12">110℃</text><text x="6" y="50">65℃</text><text x="6" y="88">20℃</text>' +
+		'</g>' +
+		'<polyline class="ap-chart-duty" points="' + dutyPts.join(' ') + '"/>' +
+		'<polyline class="ap-chart-temp" points="' + tempPts.join(' ') + '"/>';
+	return svg;
+}
+
+/* ------------------------------- 样式表 ------------------------------- */
 /*
- * luci-app-airpi-fancontrol - Hardware Bus & Kernel Config Cockpit (v5.3.3 Live Wave)
- * Layout: hero deck full-width, form card-ified, unified 1080px column.
- * Live: rAF-driven scrolling PWM wave + randomized duty drift + sweeping scanline.
+ * 颜色令牌优先由容器上的 data-ap-theme 决定(渲染时按 LuCI 主题实际背景色判定，
+ * 因此能跟随 openwrt21 的深/浅色开关)，并保留 prefers-color-scheme 作为回退。
+ */
+var CSS = String('') +
+	'.ap-root{--ap-radius:16px;--ap-gap:14px;' +
+	'--ap-bg:rgba(255,255,255,.82);--ap-bg-soft:rgba(248,250,252,.72);' +
+	'--ap-border:rgba(203,213,225,.72);--ap-border-strong:rgba(148,163,184,.5);' +
+	'--ap-text:#0f172a;--ap-text-muted:#475569;--ap-text-dim:#94a3b8;' +
+	'--ap-accent:#0284c7;--ap-accent-soft:rgba(2,132,199,.1);' +
+	'--ap-good:#059669;--ap-good-soft:rgba(5,150,105,.12);' +
+	'--ap-warn:#d97706;--ap-warn-soft:rgba(217,119,6,.13);' +
+	'--ap-danger:#dc2626;--ap-danger-soft:rgba(220,38,38,.11);' +
+	'--ap-shadow:0 10px 28px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.05);' +
+	'--ap-ease:cubic-bezier(.4,0,.2,1);' +
+	'max-width:1180px;margin:14px auto 34px;padding:0 4px;' +
+	'color:var(--ap-text);font-size:14px;line-height:1.5;}\n' +
+	'.ap-root[data-ap-theme="dark"]{--ap-bg:rgba(23,32,50,.82);' +
+	'--ap-bg-soft:rgba(15,23,42,.62);--ap-border:rgba(148,163,184,.22);' +
+	'--ap-border-strong:rgba(148,163,184,.35);--ap-text:#e8eef7;--ap-text-muted:#a9bad0;' +
+	'--ap-text-dim:#7d8ea6;--ap-accent:#38bdf8;--ap-accent-soft:rgba(56,189,248,.14);' +
+	'--ap-good:#34d399;--ap-good-soft:rgba(52,211,153,.15);--ap-warn:#fbbf24;' +
+	'--ap-warn-soft:rgba(251,191,36,.15);--ap-danger:#f87171;' +
+	'--ap-danger-soft:rgba(248,113,113,.14);--ap-shadow:0 12px 30px rgba(0,0,0,.38);}\n' +
+	'@media (prefers-color-scheme:dark){.ap-root:not([data-ap-theme="light"]){' +
+	'--ap-bg:rgba(23,32,50,.82);--ap-bg-soft:rgba(15,23,42,.62);' +
+	'--ap-border:rgba(148,163,184,.22);--ap-border-strong:rgba(148,163,184,.35);' +
+	'--ap-text:#e8eef7;--ap-text-muted:#a9bad0;--ap-text-dim:#7d8ea6;' +
+	'--ap-accent:#38bdf8;--ap-accent-soft:rgba(56,189,248,.14);--ap-good:#34d399;' +
+	'--ap-warn:#fbbf24;--ap-danger:#f87171;--ap-shadow:0 12px 30px rgba(0,0,0,.38);}}\n' +
+	'.ap-header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;' +
+	'padding:14px 18px;margin-bottom:14px;border:1px solid var(--ap-border);' +
+	'border-radius:var(--ap-radius);background:var(--ap-bg);' +
+	'-webkit-backdrop-filter:blur(14px) saturate(160%);backdrop-filter:blur(14px) saturate(160%);' +
+	'box-shadow:var(--ap-shadow);}\n' +
+	'.ap-header-mark{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;' +
+	'justify-content:center;color:var(--ap-accent);background:var(--ap-accent-soft);' +
+	'border:1px solid var(--ap-border);flex:0 0 auto;}\n' +
+	'.ap-header-text{flex:1 1 auto;min-width:150px;}\n' +
+	'.ap-header-title{font-size:16px;font-weight:700;letter-spacing:-.01em;}\n' +
+	'.ap-header-sub{font-size:12px;color:var(--ap-text-muted);margin-top:1px;}\n' +
+	'.ap-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:99px;' +
+	'font-size:11.5px;font-weight:650;letter-spacing:.01em;border:1px solid transparent;white-space:nowrap;}\n' +
+	'.ap-pill.is-good{color:var(--ap-good);background:var(--ap-good-soft);border-color:var(--ap-good-soft);}\n' +
+	'.ap-pill.is-warning{color:var(--ap-warn);background:var(--ap-warn-soft);border-color:var(--ap-warn-soft);}\n' +
+	'.ap-pill.is-danger{color:var(--ap-danger);background:var(--ap-danger-soft);border-color:var(--ap-danger-soft);}\n' +
+	'.ap-pill.is-info{color:var(--ap-accent);background:var(--ap-accent-soft);border-color:var(--ap-accent-soft);}\n' +
+	'.ap-pill.is-muted{color:var(--ap-text-muted);background:var(--ap-bg-soft);border-color:var(--ap-border);}\n' +
+	'.ap-dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 auto;}\n' +
+	'.ap-dot-live{animation:ap-breathe 2.4s var(--ap-ease) infinite;}\n' +
+	'@keyframes ap-breathe{0%,100%{opacity:1}50%{opacity:.35}}\n' +
+	'.ap-tabs{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 var(--ap-gap);padding:5px;' +
+	'border:1px solid var(--ap-border);border-radius:calc(var(--ap-radius) - 2px);' +
+	'background:var(--ap-bg);box-shadow:var(--ap-shadow);}\n' +
+	'.ap-tab{appearance:none;border:1px solid transparent;background:transparent;color:var(--ap-text-muted);' +
+	'font:inherit;font-weight:600;font-size:13px;padding:9px 15px;border-radius:11px;cursor:pointer;' +
+	'transition:background .18s var(--ap-ease),color .18s var(--ap-ease);' +
+	'min-height:40px;display:inline-flex;align-items:center;gap:7px;}\n' +
+	'.ap-tab:hover{background:var(--ap-bg-soft);color:var(--ap-text);}\n' +
+	'.ap-tab[aria-selected="true"]{background:var(--ap-accent);color:#fff;box-shadow:0 4px 14px var(--ap-accent-soft);}\n' +
+	'.ap-root[data-ap-theme="dark"] .ap-tab[aria-selected="true"]{color:#08111c;}\n' +
+	'.ap-tab:focus-visible{outline:2px solid var(--ap-accent);outline-offset:2px;}\n' +
+	'.ap-tab-badge{font-size:10px;font-weight:700;padding:1px 6px;border-radius:99px;' +
+	'background:var(--ap-danger-soft);color:var(--ap-danger);}\n' +
+	'.ap-tab[aria-selected="true"] .ap-tab-badge{background:rgba(255,255,255,.28);color:inherit;}\n' +
+	'.ap-panel{display:none;}\n' +
+	'.ap-panel.is-active{display:block;animation:ap-fade .2s var(--ap-ease);}\n' +
+	'@keyframes ap-fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}\n' +
+	'.ap-grid{display:grid;gap:var(--ap-gap);grid-template-columns:repeat(12,1fr);}\n' +
+	'.ap-card{grid-column:span 12;border:1px solid var(--ap-border);border-radius:var(--ap-radius);' +
+	'background:var(--ap-bg);box-shadow:var(--ap-shadow);overflow:hidden;' +
+	'-webkit-backdrop-filter:blur(14px) saturate(160%);backdrop-filter:blur(14px) saturate(160%);' +
+	'margin-bottom:var(--ap-gap);}\n' +
+	'.ap-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;' +
+	'padding:12px 16px;border-bottom:1px solid var(--ap-border);}\n' +
+	'.ap-card-title{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;' +
+	'letter-spacing:.04em;text-transform:uppercase;color:var(--ap-text-muted);}\n' +
+	'.ap-card-meta{font-size:11.5px;color:var(--ap-text-dim);display:flex;align-items:center;gap:8px;}\n' +
+	'.ap-card-body{padding:16px;}\n' +
+	'.ap-icon{display:inline-flex;align-items:center;color:var(--ap-accent);flex:0 0 auto;}\n' +
+	'.ap-split{display:grid;gap:var(--ap-gap);grid-template-columns:300px 1fr;}\n' +
+	'.ap-duo{display:grid;gap:var(--ap-gap);grid-template-columns:1fr 1fr;}\n' +
+	'.ap-stage{width:100%;max-width:230px;margin:0 auto;color:var(--ap-accent);}\n' +
+	'.ap-fan-svg{width:100%;height:auto;display:block;}\n' +
+	'.ap-duct{fill:none;stroke:var(--ap-border-strong);stroke-width:2;}\n' +
+	'.ap-duct-inner{fill:var(--ap-bg-soft);stroke:var(--ap-border);stroke-width:1;}\n' +
+	'.ap-struts line{stroke:var(--ap-border-strong);stroke-width:2;stroke-linecap:round;opacity:.75;}\n' +
+	'.ap-rotor{transform-origin:100px 100px;fill:url(#apBlade);stroke:var(--ap-border-strong);' +
+	'stroke-width:.6;animation:ap-spin var(--ap-rotor,1.1s) linear infinite;' +
+	'animation-play-state:paused;}\n' +
+	'.ap-rotor.is-running{animation-play-state:running;}\n' +
+	'@keyframes ap-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}\n' +
+	'.ap-hub{fill:var(--ap-bg-soft);stroke:var(--ap-border-strong);stroke-width:1.2;}\n' +
+	'.ap-hub-dot{fill:var(--ap-accent);}\n' +
+	'@media (prefers-reduced-motion:reduce){.ap-rotor,.ap-dot-live{animation:none!important;}}\n' +
+	'.ap-readout{text-align:center;margin-top:6px;}\n' +
+	'.ap-readout-big{font-size:38px;font-weight:800;letter-spacing:-.02em;line-height:1;' +
+	'font-variant-numeric:tabular-nums;}\n' +
+	'.ap-readout-cap{font-size:11.5px;color:var(--ap-text-muted);margin-top:5px;font-weight:600;}\n' +
+	'.ap-chips{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:9px;}\n' +
+	'.ap-chip{background:var(--ap-bg-soft);border:1px solid var(--ap-border);border-radius:12px;padding:9px 10px;}\n' +
+	'.ap-chip-label{font-size:10.5px;font-weight:650;color:var(--ap-text-dim);letter-spacing:.03em;}\n' +
+	'.ap-chip-value{font-size:14.5px;font-weight:750;margin-top:3px;font-variant-numeric:tabular-nums;}\n' +
+	'.ap-chip.is-good .ap-chip-value{color:var(--ap-good);}\n' +
+	'.ap-chip.is-warning .ap-chip-value{color:var(--ap-warn);}\n' +
+	'.ap-chip.is-danger .ap-chip-value{color:var(--ap-danger);}\n' +
+	'.ap-chip.is-info .ap-chip-value{color:var(--ap-accent);}\n' +
+	'.ap-dl{margin:0;display:grid;gap:2px;}\n' +
+	'.ap-dl-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;' +
+	'border-bottom:1px dashed var(--ap-border);}\n' +
+	'.ap-dl-row:last-child{border-bottom:none;}\n' +
+	'.ap-dl-key{font-size:12.5px;color:var(--ap-text-muted);}\n' +
+	'.ap-dl-val{margin:0;font-size:12.5px;font-weight:650;text-align:right;' +
+	'font-variant-numeric:tabular-nums;overflow-wrap:anywhere;}\n' +
+	'.ap-dl-val.is-muted{color:var(--ap-text-dim);font-weight:500;}\n' +
+	'.ap-dl-val.is-good{color:var(--ap-good);} .ap-dl-val.is-warning{color:var(--ap-warn);}' +
+	' .ap-dl-val.is-danger{color:var(--ap-danger);}\n' +
+	'.ap-note{font-size:12px;color:var(--ap-text-muted);background:var(--ap-bg-soft);' +
+	'border:1px solid var(--ap-border);border-left:3px solid var(--ap-accent);' +
+	'border-radius:10px;padding:10px 12px;margin:0 0 12px;}\n' +
+	'.ap-alert{display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:12px;' +
+	'border:1px solid var(--ap-border);background:var(--ap-bg-soft);margin-bottom:10px;font-size:12.5px;}\n' +
+	'.ap-alert.is-warning{border-color:var(--ap-warn);background:var(--ap-warn-soft);color:var(--ap-warn);}\n' +
+	'.ap-alert.is-danger{border-color:var(--ap-danger);background:var(--ap-danger-soft);color:var(--ap-danger);}\n' +
+	'.ap-alert.is-info{border-color:var(--ap-accent);background:var(--ap-accent-soft);color:var(--ap-accent);}\n' +
+	'.ap-alert-body{flex:1 1 auto;color:var(--ap-text);}\n' +
+	'.ap-levels{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));}\n' +
+	'.ap-level{display:flex;flex-direction:column;align-items:center;gap:3px;padding:13px 9px;' +
+	'border:1px solid var(--ap-border);border-radius:13px;background:var(--ap-bg-soft);' +
+	'color:var(--ap-text);cursor:pointer;font:inherit;transition:transform .16s var(--ap-ease),' +
+	'border-color .16s var(--ap-ease),box-shadow .16s var(--ap-ease);min-height:78px;}\n' +
+	'.ap-level:hover{transform:translateY(-2px);border-color:var(--ap-accent);box-shadow:var(--ap-shadow);}\n' +
+	'.ap-level:focus-visible{outline:2px solid var(--ap-accent);outline-offset:2px;}\n' +
+	'.ap-level[disabled]{opacity:.55;cursor:progress;}\n' +
+	'.ap-level.is-active{border-color:var(--ap-accent);background:var(--ap-accent);color:#fff;}\n' +
+	'.ap-root[data-ap-theme="dark"] .ap-level.is-active{color:#08111c;}\n' +
+	'.ap-level.is-active .ap-level-sub{color:inherit;opacity:.8;}\n' +
+	'.ap-level-name{font-size:13.5px;font-weight:700;}\n' +
+	'.ap-level-sub{font-size:11px;color:var(--ap-text-dim);font-variant-numeric:tabular-nums;}\n' +
+	'.ap-slider-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}\n' +
+	'.ap-slider{flex:1 1 200px;min-width:180px;height:26px;}\n' +
+	'.ap-slider-value{font-weight:750;font-variant-numeric:tabular-nums;min-width:104px;text-align:right;}\n' +
+	'.ap-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px;}\n' +
+	'.ap-btn{appearance:none;border:1px solid var(--ap-border);background:var(--ap-bg-soft);' +
+	'color:var(--ap-text);font:inherit;font-size:13px;font-weight:650;padding:9px 16px;' +
+	'border-radius:11px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;' +
+	'min-height:38px;transition:transform .15s var(--ap-ease),box-shadow .15s var(--ap-ease),' +
+	'opacity .15s var(--ap-ease);}\n' +
+	'.ap-btn:hover{transform:translateY(-1px);box-shadow:var(--ap-shadow);}\n' +
+	'.ap-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none;}\n' +
+	'.ap-btn.is-primary{background:var(--ap-accent);border-color:var(--ap-accent);color:#fff;}\n' +
+	'.ap-root[data-ap-theme="dark"] .ap-btn.is-primary{color:#08111c;}\n' +
+	'.ap-btn.is-danger{color:var(--ap-danger);border-color:var(--ap-danger);background:var(--ap-danger-soft);}\n' +
+	'.ap-log{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;' +
+	'line-height:1.55;background:var(--ap-bg-soft);border:1px solid var(--ap-border);border-radius:11px;' +
+	'padding:11px 13px;max-height:300px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;' +
+	'margin:0;color:var(--ap-text);}\n' +
+	'.ap-area{width:100%;min-height:120px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;' +
+	'font-size:11.5px;border:1px solid var(--ap-border);border-radius:11px;background:var(--ap-bg-soft);' +
+	'color:var(--ap-text);padding:10px;box-sizing:border-box;resize:vertical;}\n' +
+	'.ap-area:focus-visible{outline:2px solid var(--ap-accent);outline-offset:1px;}\n' +
+	'.ap-table{width:100%;border-collapse:collapse;font-size:12.5px;}\n' +
+	'.ap-table th,.ap-table td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--ap-border);' +
+	'vertical-align:top;}\n' +
+	'.ap-table th{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;' +
+	'color:var(--ap-text-dim);background:var(--ap-bg-soft);}\n' +
+	'.ap-table tr:last-child td{border-bottom:none;}\n' +
+	'.ap-table td.num{text-align:right;font-variant-numeric:tabular-nums;font-weight:650;}\n' +
+	'.ap-table code{font-size:11px;color:var(--ap-text-dim);overflow-wrap:anywhere;}\n' +
+	'.ap-chart{width:100%;height:auto;display:block;color:var(--ap-accent);}\n' +
+	'.ap-chart-empty{font-size:12px;color:var(--ap-text-dim);padding:24px 0;text-align:center;}\n' +
+	'.ap-chart-grid line{stroke:var(--ap-border);stroke-width:1;}\n' +
+	'.ap-chart-grid text{fill:var(--ap-text-dim);font-size:8px;}\n' +
+	'.ap-chart-line{fill:none;stroke:var(--ap-accent);stroke-width:2.2;stroke-linejoin:round;}\n' +
+	'.ap-chart-crit{stroke:var(--ap-danger);stroke-width:1.4;stroke-dasharray:4 3;}\n' +
+	'.ap-chart-marks line{stroke:var(--ap-border-strong);stroke-width:1.2;}\n' +
+	'.ap-chart-marks text{fill:var(--ap-text-dim);font-size:8px;}\n' +
+	'.ap-chart-now{fill:var(--ap-warn);stroke:#fff;stroke-width:1;}\n' +
+	'.ap-chart-temp{fill:none;stroke:var(--ap-warn);stroke-width:2;stroke-linejoin:round;}\n' +
+	'.ap-chart-duty{fill:none;stroke:var(--ap-accent);stroke-width:1.6;' +
+	'stroke-dasharray:4 3;opacity:.85;}\n' +
+	'.ap-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ap-text-muted);' +
+	'margin-top:8px;}\n' +
+	'.ap-legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:5px;' +
+	'vertical-align:middle;}\n' +
+	'.ap-topo{width:100%;height:auto;display:block;}\n' +
+	'.ap-topo-box{fill:var(--ap-bg-soft);stroke:var(--ap-border-strong);stroke-width:1.2;}\n' +
+	'.ap-topo-box.is-live{stroke:var(--ap-good);}\n' +
+	'.ap-topo-box.is-dead{stroke:var(--ap-danger);stroke-dasharray:4 3;}\n' +
+	'.ap-topo-t{fill:var(--ap-text);font-size:11px;font-weight:700;}\n' +
+	'.ap-topo-s{fill:var(--ap-text-dim);font-size:9.5px;}\n' +
+	'.ap-topo-wire{stroke:var(--ap-border-strong);stroke-width:1.6;fill:none;}\n' +
+	'.ap-topo-wire.is-live{stroke:var(--ap-good);}\n' +
+	'.ap-topo-wire.is-pulse{stroke-dasharray:5 5;animation:ap-flow 1.6s linear infinite;}\n' +
+	'@keyframes ap-flow{to{stroke-dashoffset:-20}}\n' +
+	'.ap-form{font-size:13px;}\n' +
+	'.ap-form .cbi-section{background:transparent!important;border:none!important;' +
+	'padding:0!important;margin:0!important;box-shadow:none!important;}\n' +
+	'.ap-form .cbi-value{padding:9px 0!important;border-bottom:1px dashed var(--ap-border);' +
+	'display:flex!important;gap:12px;align-items:flex-start;}\n' +
+	'.ap-form .cbi-value:last-of-type{border-bottom:none;}\n' +
+	'.ap-form .cbi-value-title{width:34%!important;min-width:150px!important;padding:6px 0 0!important;' +
+	'font-size:12.5px!important;font-weight:650!important;color:var(--ap-text)!important;}\n' +
+	'.ap-form .cbi-value-field{flex:1 1 auto!important;}\n' +
+	'.ap-form .cbi-value-description{font-size:11.5px!important;color:var(--ap-text-dim)!important;' +
+	'margin-top:4px!important;}\n' +
+	'.ap-form input[type="text"],.ap-form input[type="password"],.ap-form select,.ap-form textarea' +
+	'{border-radius:10px!important;border:1px solid var(--ap-border)!important;' +
+	'background:var(--ap-bg-soft)!important;color:var(--ap-text)!important;padding:8px 11px!important;' +
+	'min-height:36px;font-size:13px!important;max-width:220px;}\n' +
+	'.ap-form input:focus-visible,.ap-form select:focus-visible{outline:2px solid var(--ap-accent);' +
+	'outline-offset:1px;}\n' +
+	'.ap-form .cbi-button{border-radius:10px!important;font-weight:650!important;}\n' +
+	'.ap-form .cbi-value-error,.ap-form .cbi-value .error{color:var(--ap-danger)!important;}\n' +
+	'.ap-form .cbi-value .cbi-validate-message{font-size:11.5px!important;color:var(--ap-danger)!important;}\n' +
+	'@media (max-width:900px){.ap-split{grid-template-columns:1fr;}.ap-duo{grid-template-columns:1fr;}}\n' +
+	'@media (max-width:640px){.ap-root{--ap-gap:11px;margin:8px auto 24px;}' +
+	'.ap-card-body{padding:13px;}.ap-form .cbi-value{display:block!important;}' +
+	'.ap-form .cbi-value-title{width:auto!important;min-width:0!important;padding-bottom:4px!important;}' +
+	'.ap-form input[type="text"],.ap-form select{max-width:100%!important;width:100%!important;}' +
+	'.ap-tab{flex:1 1 auto;justify-content:center;font-size:12.5px;padding:9px 10px;}' +
+	'.ap-readout-big{font-size:32px;}.ap-stage{max-width:180px;}}\n';
+
+/* LuCI 主题变量并不保证存在，深/浅色直接由页面实际背景亮度判定 */
+function detectTheme(root) {
+	var probe = document.body;
+	var bg = window.getComputedStyle(probe).backgroundColor;
+	var match = String(bg).match(/(\d+)[^\d]+(\d+)[^\d]+(\d+)/);
+	if (!match) {
+		root.setAttribute('data-ap-theme', 'light');
+		return;
+	}
+	var r = Number(match[1]), g = Number(match[2]), b = Number(match[3]);
+	var lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+	root.setAttribute('data-ap-theme', lum < 0.5 ? 'dark' : 'light');
+}
+
+/* ------------------------------- 表单区 ------------------------------- */
+/*
+ * 三个独立 Map 分别归属温控策略 / 传感器 / 高级设置三个标签页。
+ * 标签页切换只做显隐，不重建表单，因此未保存的编辑内容不会丢失。
  */
 
-function parseCfgKV(s) {
-	var o = {};
-	String(s || '').split('\n').forEach(function(l) {
-		var i = l.indexOf('=');
-		if (i > 0)
-			o[l.slice(0, i).trim()] = l.slice(i + 1).trim();
-	});
-	return o;
+function sectionOf(m, title, description) {
+	var s = m.section(form.NamedSection, SECTION, 'fan', title, description);
+	s.anonymous = true;
+	return s;
 }
 
-var HWCfgCSS = `
-:root {
-  --hw-pri: #0284c7;
-  --hw-pri-glow: rgba(2, 132, 199, 0.28);
-  --hw-suc: #10b981;
-  --hw-suc-bg: rgba(16, 185, 129, 0.12);
-  --hw-warn: #f59e0b;
-  --hw-warn-bg: rgba(245, 158, 11, 0.12);
-  --hw-err: #ef4444;
-  --hw-err-bg: rgba(239, 68, 68, 0.1);
-  
-  --hw-card-bg: rgba(255, 255, 255, 0.82);
-  --hw-inner-bg: rgba(248, 250, 252, 0.75);
-  --hw-border: rgba(226, 232, 240, 0.85);
-  --hw-border-focus: rgba(2, 132, 199, 0.4);
-  --hw-shadow: 0 14px 34px rgba(15, 23, 42, 0.05), 0 2px 6px rgba(15, 23, 42, 0.02);
-  --hw-inner-light: inset 0 1px 2px rgba(255, 255, 255, 0.95);
-  
-  --hw-text-title: #0f172a;
-  --hw-text-body: #334155;
-  --hw-text-muted: #64748b;
-  --hw-text-dim: #94a3b8;
-  --hw-radius: 22px;
-}
+function makeCurveMap(self) {
+	var m = new form.Map(CONFIG, _('温控策略'),
+		_('温度阶梯曲线决定自动模式下的风扇占空比。修改后需保存并应用，守护进程会在下一个控制周期生效。'));
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --hw-card-bg: rgba(17, 24, 39, 0.85);
-    --hw-inner-bg: rgba(30, 41, 59, 0.65);
-    --hw-border: rgba(255, 255, 255, 0.08);
-    --hw-border-focus: rgba(56, 189, 248, 0.45);
-    --hw-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
-    --hw-inner-light: inset 0 1px 1px rgba(255, 255, 255, 0.1);
-    --hw-text-title: #f8fafc;
-    --hw-text-body: #cbd5e1;
-    --hw-text-muted: #94a3b8;
-    --hw-text-dim: #64748b;
-  }
-}
+	var s = sectionOf(m, _('温度阈值与档位'),
+		_('阈值需严格递增，占空比需随温度单调不降，否则后端会回退到出厂阶梯并在概览页报告原因。'));
 
-.hw-cockpit {
-  margin: 8px 0 26px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
-  color: var(--hw-text-body);
-}
-
-.hw-master-card {
-  background: var(--hw-card-bg);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid var(--hw-border);
-  border-radius: var(--hw-radius);
-  padding: 24px;
-  box-shadow: var(--hw-shadow), var(--hw-inner-light);
-  margin-bottom: 24px;
-}
-
-.hw-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 20px;
-}
-.hw-title-box {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.hw-icon-badge {
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #0284c7, #6366f1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  box-shadow: 0 6px 18px var(--hw-pri-glow);
-}
-.hw-icon-badge svg { width: 22px; height: 22px; }
-.hw-h1 { font-size: 17.5px; font-weight: 800; color: var(--hw-text-title); letter-spacing: -0.2px; }
-.hw-h2 { font-size: 12px; color: var(--hw-text-muted); margin-top: 3px; }
-
-.hw-topo-container {
-  width: 100%;
-  border-radius: 16px;
-  background: var(--hw-inner-bg);
-  border: 1px solid var(--hw-border);
-  padding: 14px;
-  margin-bottom: 20px;
-  box-sizing: border-box;
-  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.02);
-}
-.hw-topo-svg {
-  width: 100%;
-  height: auto;
-  display: block;
-}
-
-/* 信号流光动画 */
-@keyframes hw-dash-flow {
-  from { stroke-dashoffset: 32; }
-  to { stroke-dashoffset: 0; }
-}
-@keyframes hw-wave-roll {
-  0% { transform: translateX(0); }
-  100% { transform: translateX(-48px); }
-}
-@keyframes hw-rotor-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.hw-active-pulse {
-  stroke-dasharray: 6 6;
-  animation: hw-dash-flow 1.1s linear infinite;
-}
-.hw-wave-travel {
-  will-change: transform;
-}
-/* 扫描亮线：在示波器裁剪区内循环横扫 */
-@keyframes hw-scan-x {
-  from { transform: translateX(-12px); opacity: 0; }
-  12% { opacity: 1; }
-  88% { opacity: 1; }
-  to { transform: translateX(155px); opacity: 0; }
-}
-.hw-scan {
-  animation: hw-scan-x 2.4s linear infinite;
-}
-.hw-fan-rotor {
-  transform-origin: 715px 70px;
-  animation: hw-rotor-spin var(--rotor-dur, 1.5s) linear infinite;
-}
-.hw-fan-rotor.stopped {
-  animation-play-state: paused;
-}
-
-/* 状态芯片卡片 */
-.hw-deck-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-}
-.hw-cell-card {
-  background: var(--hw-inner-bg);
-  border: 1px solid var(--hw-border);
-  border-radius: 16px;
-  padding: 16px 18px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  transition: all 0.25s ease;
-}
-.hw-cell-card:hover {
-  transform: translateY(-2px);
-  background: #ffffff;
-  border-color: var(--hw-border-focus);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
-}
-.hw-cell-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: var(--hw-text-muted);
-}
-.hw-pill {
-  font-size: 10.5px;
-  padding: 3px 9px;
-  border-radius: 99px;
-  font-weight: 700;
-  letter-spacing: 0.2px;
-}
-.hw-cell-main {
-  font-size: 20px;
-  font-weight: 900;
-  color: var(--hw-text-title);
-  letter-spacing: -0.5px;
-  margin: 10px 0 4px;
-}
-.hw-cell-sub {
-  font-size: 11.5px;
-  color: var(--hw-text-muted);
-  line-height: 1.45;
-}
-
-/* LuCI 控件与整页布局统一 */
-.hw-page {
-  max-width: 1080px;
-  margin: 0 auto;
-}
-.hw-deck-host { margin-bottom: 22px; }
-
-/* 单 tab 无意义，隐藏 LuCI tab 条 */
-.cbi-map .cbi-tabs,
-.cbi-map .cbi-tab-descr {
-  display: none !important;
-}
-
-/* 表单区卡片化，与顶部看板同款毛玻璃 */
-.cbi-map .cbi-section {
-  background: var(--hw-card-bg) !important;
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid var(--hw-border) !important;
-  border-radius: var(--hw-radius) !important;
-  box-shadow: var(--hw-shadow), var(--hw-inner-light) !important;
-  padding: 24px 28px !important;
-  margin-bottom: 24px !important;
-}
-.cbi-map .cbi-section > .cbi-section-descr {
-  color: var(--hw-text-muted) !important;
-  font-size: 12.5px !important;
-  margin-bottom: 16px !important;
-}
-
-/* 表单行：label 收敛宽度，行距统一 */
-.cbi-map .cbi-value {
-  padding: 10px 0 !important;
-  border-bottom: none !important;
-  vertical-align: middle !important;
-}
-.cbi-map .cbi-value-title {
-  width: 200px !important;
-  min-width: 200px !important;
-  font-size: 13px !important;
-  font-weight: 600 !important;
-  color: var(--hw-text-body) !important;
-  padding-top: 8px !important;
-}
-.cbi-map .cbi-value-field { flex: 1 !important; }
-.cbi-map .cbi-value .cbi-value-field .cbi-input-select,
-.cbi-map .cbi-value .cbi-value-field input[type="text"] {
-  border-radius: 12px !important;
-  padding: 9px 14px !important;
-  border: 1px solid var(--hw-border) !important;
-  background: var(--hw-inner-bg) !important;
-  color: var(--hw-text-title) !important;
-  outline: none !important;
-  min-width: 260px !important;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.cbi-map .cbi-value .cbi-value-field .cbi-input-select:focus,
-.cbi-map .cbi-value .cbi-value-field input[type="text"]:focus {
-  border-color: var(--hw-pri) !important;
-  box-shadow: 0 0 0 3px var(--hw-pri-glow) !important;
-}
-.cbi-value-description {
-  font-size: 12px !important;
-  color: var(--hw-text-muted) !important;
-  margin-top: 6px !important;
-}
-
-/* 按钮：Reload 与 Save & Apply 行统一风格 */
-.cbi-button-apply, .cbi-button-save, .cbi-button-reset {
-  border: none !important;
-  border-radius: 12px !important;
-  padding: 9px 22px !important;
-  font-weight: 700 !important;
-  transition: transform 0.15s, opacity 0.15s !important;
-}
-.cbi-button-apply, .cbi-button-save {
-  background: linear-gradient(135deg, #0284c7, #0ea5e9) !important;
-  color: #fff !important;
-  box-shadow: 0 4px 14px var(--hw-pri-glow) !important;
-}
-.cbi-button-reset {
-  background: var(--hw-inner-bg) !important;
-  color: var(--hw-text-body) !important;
-  border: 1px solid var(--hw-border) !important;
-}
-.cbi-button-apply:hover, .cbi-button-save:hover { transform: translateY(-1px); opacity: 0.95; }
-.cbi-page-actions {
-  padding: 4px 0 0 !important;
-  text-align: right !important;
-}
-.cbi-page-actions .cbi-button { margin-left: 10px !important; }
-
-@media (max-width: 860px) {
-  .cbi-map .cbi-value:not(.hidden) { display: block !important; }
-  /* depends 隐藏的行必须保持隐藏（LuCI 用 .hidden 标记），否则互斥字段会在窄屏同时显示 */
-  .cbi-map .cbi-value.hidden { display: none !important; }
-  .cbi-map .cbi-value-title { width: 100% !important; min-width: 0 !important; padding-bottom: 6px !important; }
-  .cbi-map .cbi-value .cbi-value-field .cbi-input-select,
-  .cbi-map .cbi-value .cbi-value-field input[type="text"] { min-width: 0 !important; width: 100% !important; }
-}
-
-@media (max-width: 768px) {
-  .hw-deck-grid { grid-template-columns: 1fr; }
-  .hw-master-card { padding: 18px 14px; }
-}
-`;
-
-var SVG_ICONS = {
-	chip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg>'
-};
-
-// 动态高精方波生成算法 (根据真实 duty / 255 计算脉宽)
-function calculatePWMPath(ratio) {
-	var period = 48; // 一个周期像素跨度
-	var highY = 32;  // 高电平 (3.3V)
-	var lowY = 60;   // 低电平 (0V)
-	var cycles = 6;  // 绘制 6 个周期以保证滚动无缝拼接 (6 * 48 = 288px)
-
-	if (ratio <= 0.02) {
-		return 'M 0 ' + lowY + ' L 288 ' + lowY;
-	}
-	if (ratio >= 0.98) {
-		return 'M 0 ' + highY + ' L 288 ' + highY;
-	}
-
-	var highW = Math.max(2, Math.min(period - 2, period * ratio));
-	var path = 'M 0 ' + lowY;
-
-	for (var i = 0; i < cycles; i++) {
-		var x = i * period;
-		path += ' L ' + x + ' ' + highY;
-		path += ' L ' + (x + highW).toFixed(1) + ' ' + highY;
-		path += ' L ' + (x + highW).toFixed(1) + ' ' + lowY;
-		path += ' L ' + (x + period) + ' ' + lowY;
-	}
-	return path;
-}
-
-// 构建拓扑 SVG，参数真实驱动
-function buildLiveTopologySVG(hw, is16G) {
-	var isHwPwmValid = hw.hw_pwm && hw.hw_pwm !== 'none';
-	var isSwPwmLoaded = hw.softpwm_loaded === '1';
-
-	var rawDuty = parseInt(hw.duty, 10);
-	if (isNaN(rawDuty)) rawDuty = parseInt(hw.fanspd, 10);
-	if (isNaN(rawDuty)) rawDuty = isSwPwmLoaded ? 128 : 0;
-
-	var ratio = Math.min(Math.max(rawDuty / 255, 0), 1);
-	var pctText = (ratio * 100).toFixed(1) + '%';
-	var wavePath = calculatePWMPath(ratio);
-
-	var hwColor = isHwPwmValid ? '#10b981' : 'rgba(239, 68, 68, 0.45)';
-	var swColor = isSwPwmLoaded ? '#0284c7' : (is16G ? '#f59e0b' : 'rgba(148, 163, 184, 0.35)');
-
-	var hwDashClass = isHwPwmValid ? 'hw-active-pulse' : '';
-	var swDashClass = isSwPwmLoaded ? 'hw-active-pulse' : '';
-
-	var convergenceLine = isSwPwmLoaded ? '#0284c7' : (isHwPwmValid ? '#10b981' : 'rgba(148,163,184,0.3)');
-	var convergenceClass = (isSwPwmLoaded || isHwPwmValid) ? 'hw-active-pulse' : '';
-
-	// 转子速度：依据真实占空比反比计算动画旋转周期
-	var rotorDur = ratio <= 0 ? '0s' : (Math.max(0.18, (1 - ratio) * 1.5 + 0.2)).toFixed(2) + 's';
-	var rotorStopped = ratio <= 0 ? 'stopped' : '';
-
-	return `
-	<svg class="hw-topo-svg" viewBox="0 0 760 140">
-		<defs>
-			<linearGradient id="soc-foil" x1="0%" y1="0%" x2="100%" y2="100%">
-				<stop offset="0%" stop-color="#0284c7"/>
-				<stop offset="100%" stop-color="#4f46e5"/>
-			</linearGradient>
-
-			<linearGradient id="screen-grad" x1="0%" y1="0%" x2="0%" y2="100%">
-				<stop offset="0%" stop-color="#0b1329"/>
-				<stop offset="100%" stop-color="#111c38"/>
-			</linearGradient>
-
-			<clipPath id="scope-viewport">
-				<rect x="0" y="0" width="155" height="96" rx="12"/>
-			</clipPath>
-		</defs>
-
-		<!-- 节点 1: AirPi SoC 核心 -->
-		<g transform="translate(16, 24)">
-			<rect width="144" height="92" rx="14" fill="url(#soc-foil)" filter="drop-shadow(0 4px 10px rgba(2, 132, 199, 0.2))"/>
-			<text x="72" y="36" fill="#ffffff" font-size="12.5" font-weight="800" text-anchor="middle">AirPi SoC Core</text>
-			<text x="72" y="55" fill="#bae6fd" font-size="11" font-weight="600" text-anchor="middle">eMMC ${hw.emmc_gb || '?'}GB 架构</text>
-			<rect x="24" y="66" width="96" height="18" rx="6" fill="rgba(255,255,255,0.2)"/>
-			<text x="72" y="79" fill="#ffffff" font-size="9.5" font-weight="700" text-anchor="middle">${is16G ? 'v2.0 软件总线模式' : 'v1.0 硬件总线模式'}</text>
-		</g>
-
-		<!-- 拓扑总线 A（硬件 PWM 上轨） -->
-		<path d="M 160 50 L 226 50" fill="none" stroke="${hwColor}" stroke-width="2.2" class="${hwDashClass}"/>
-		
-		<!-- 节点 2: 硬件 PWM 控制器 -->
-		<g transform="translate(226, 26)">
-			<rect width="146" height="42" rx="10" fill="var(--hw-card-bg)" stroke="${hwColor}" stroke-width="1.4"/>
-			<circle cx="16" cy="21" r="5" fill="${isHwPwmValid ? '#10b981' : '#ef4444'}"/>
-			<text x="30" y="19" fill="var(--hw-text-title)" font-size="11" font-weight="800">内核硬件 PWM</text>
-			<text x="30" y="32" fill="var(--hw-text-muted)" font-size="9.5">pwm-fan / hwmon0</text>
-		</g>
-
-		<!-- 拓扑总线 B（GPIO 软中断下轨） -->
-		<path d="M 160 90 L 226 90" fill="none" stroke="${swColor}" stroke-width="2.2" class="${swDashClass}"/>
-
-		<!-- 节点 3: GPIO 软中断模块 -->
-		<g transform="translate(226, 72)">
-			<rect width="146" height="42" rx="10" fill="var(--hw-card-bg)" stroke="${swColor}" stroke-width="1.4"/>
-			<circle cx="16" cy="21" r="5" fill="${isSwPwmLoaded ? '#0284c7' : (is16G ? '#f59e0b' : '#94a3b8')}"/>
-			<text x="30" y="19" fill="var(--hw-text-title)" font-size="11" font-weight="800">内核模块 airpi_gpio</text>
-			<text id="svg-duty-label" x="30" y="32" fill="var(--hw-text-muted)" font-size="9.5">GPIO 540 · 占空比: ${rawDuty}</text>
-		</g>
-
-		<!-- 汇聚通道至示波器 -->
-		<path d="M 372 47 C 430 47, 440 70, 500 70" fill="none" stroke="${isHwPwmValid ? '#10b981' : 'rgba(148,163,184,0.2)'}" stroke-width="1.6" stroke-dasharray="3 3"/>
-		<path d="M 372 93 C 430 93, 440 70, 500 70" fill="none" stroke="${convergenceLine}" stroke-width="2.2" class="${convergenceClass}"/>
-
-		<!-- 节点 4: 真实 PWM 示波器 (Live Oscilloscope HUD) -->
-		<g transform="translate(500, 22)">
-			<rect width="155" height="96" rx="12" fill="url(#screen-grad)" stroke="rgba(255,255,255,0.18)" stroke-width="1.2"
-				filter="drop-shadow(0 4px 14px rgba(0, 0, 0, 0.25))"/>
-			
-			<!-- 标尺刻度网格 -->
-			<line x1="0" y1="32" x2="155" y2="32" stroke="rgba(56, 189, 248, 0.15)" stroke-width="1" stroke-dasharray="2 3"/>
-			<line x1="0" y1="60" x2="155" y2="60" stroke="rgba(56, 189, 248, 0.15)" stroke-width="1" stroke-dasharray="2 3"/>
-			<line x1="77" y1="0" x2="77" y2="96" stroke="rgba(56, 189, 248, 0.15)" stroke-width="1" stroke-dasharray="2 3"/>
-
-			<!-- 示波器数字面板头部 -->
-			<rect x="0" y="0" width="155" height="19" rx="12" fill="rgba(0, 0, 0, 0.35)"/>
-			<text x="8" y="13" fill="#38bdf8" font-size="9" font-weight="900" font-family="monospace">PWM DUTY: <tspan id="scope-pct-badge">${pctText}</tspan></text>
-			<text x="147" y="13" fill="#94a3b8" font-size="8.5" font-family="monospace" text-anchor="end"><tspan id="scope-raw-badge">${rawDuty}</tspan>/255</text>
-
-			<!-- 垂直电压标尺 -->
-			<text x="8" y="30" fill="#64748b" font-size="7" font-family="monospace">3.3V</text>
-			<text x="8" y="68" fill="#64748b" font-size="7" font-family="monospace">GND</text>
-
-			<!-- 动态方波 (实际脉宽计算，JS 引擎驱动连续滚动与占空比模拟漂移) -->
-			<g clip-path="url(#scope-viewport)">
-				<path id="scope-dynamic-wave" class="hw-wave-travel" d="${wavePath}"
-					fill="none" stroke="#00f5ff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"
-					filter="drop-shadow(0 0 5px rgba(0, 245, 255, 0.7))"/>
-				<line class="hw-scan" x1="0" y1="0" x2="0" y2="96" stroke="rgba(0, 245, 255, 0.3)" stroke-width="12"/>
-			</g>
-			
-			<text x="77" y="85" fill="#38bdf8" font-size="8" font-weight="700" text-anchor="middle" letter-spacing="0.5">实测调制波形</text>
-		</g>
-
-		<!-- 示波器至负载连接线 -->
-		<line x1="655" y1="70" x2="690" y2="70" stroke="#00f5ff" stroke-width="2" class="hw-active-pulse"/>
-
-		<!-- 节点 5: 真实联动风扇负载终端 -->
-		<g transform="translate(0, 0)">
-			<circle cx="715" cy="70" r="24" fill="rgba(2, 132, 199, 0.08)" stroke="#0284c7" stroke-width="1.8"/>
-			<circle cx="715" cy="70" r="21" fill="none" stroke="rgba(2, 132, 199, 0.25)" stroke-width="1" stroke-dasharray="2 3"/>
-			<!-- 4叶根据占空比变频的风扇转子 -->
-			<g id="hw-live-rotor" class="hw-fan-rotor ${rotorStopped}" style="--rotor-dur: ${rotorDur};">
-				<path d="M 715 70 C 713 62 717 52 724 49 C 725 54 722 62 715 70 Z" fill="#0284c7"/>
-				<path d="M 715 70 C 723 68 733 72 736 79 C 731 80 723 77 715 70 Z" fill="#0284c7"/>
-				<path d="M 715 70 C 717 78 713 88 706 91 C 705 86 708 78 715 70 Z" fill="#0284c7"/>
-				<path d="M 715 70 C 707 72 697 68 694 61 C 699 60 707 63 715 70 Z" fill="#0284c7"/>
-				<circle cx="715" cy="70" r="4.5" fill="#ffffff" stroke="#0284c7" stroke-width="1.5"/>
-			</g>
-		</g>
-	</svg>`;
-}
-
-var HWCfg = {
-	load: function() {
-		return Promise.all([
-			fs.exec(CTL, ['hwdetect']).then(function(r) { return r.stdout || ''; }).catch(function() { return ''; }),
-			uci.load('airpi-fan')
-		]);
-	},
-
-	buildHardwareDeck: function(hw) {
-		var emmcIs16g = (parseInt(hw.emmc_sectors, 10) || 0) > 25000000;
-		var emmcGb = hw.emmc_gb || (emmcIs16g ? '16' : '8');
-
-		var emmcBadgeBg = emmcIs16g ? 'rgba(2, 132, 199, 0.12)' : 'rgba(99, 102, 241, 0.12)';
-		var emmcBadgeColor = emmcIs16g ? '#0284c7' : '#6366f1';
-
-		var hwPwmOk = hw.hw_pwm && hw.hw_pwm !== 'none';
-		var hwBadgeBg = hwPwmOk ? 'var(--hw-suc-bg)' : 'var(--hw-err-bg)';
-		var hwBadgeColor = hwPwmOk ? 'var(--hw-suc)' : 'var(--hw-err)';
-
-		var swLoaded = hw.softpwm_loaded === '1';
-		var swBadgeBg = swLoaded ? 'var(--hw-suc-bg)' : 'var(--hw-warn-bg)';
-		var swBadgeColor = swLoaded ? 'var(--hw-suc)' : 'var(--hw-warn)';
-
-		var svgMarkup = buildLiveTopologySVG(hw, emmcIs16g);
-
-		return `
-		<div class="hw-cockpit">
-			<style>${HWCfgCSS}</style>
-			<div class="hw-master-card">
-				<div class="hw-header">
-					<div class="hw-title-box">
-						<div class="hw-icon-badge">${SVG_ICONS.chip}</div>
-						<div>
-							<div class="hw-h1">${_('硬件拓扑与调制总线感知')}</div>
-							<div class="hw-h2">${_('实时探测 AP3000M 硬件层引脚、内核定时器及 PWM 信号流向')}</div>
-						</div>
-					</div>
-				</div>
-
-				<div class="hw-topo-container">
-					${svgMarkup}
-				</div>
-
-				<div class="hw-deck-grid">
-					<!-- eMMC 卡片 -->
-					<div class="hw-cell-card">
-						<div class="hw-cell-top">
-							<span>${_('eMMC 宿主闪存')}</span>
-							<span class="hw-pill" style="background:${emmcBadgeBg};color:${emmcBadgeColor}">
-								${emmcIs16g ? _('16GB 增强版') : _('8GB 标准版')}
-							</span>
-						</div>
-						<div class="hw-cell-main">${emmcGb} GB</div>
-						<div class="hw-cell-sub">
-							${emmcIs16g ? _('架构限制：仅支持软件 PWM 驱动') : _('原生支持硬件 PWM 定时器')}
-						</div>
-					</div>
-
-					<!-- 硬件 PWM 卡片 -->
-					<div class="hw-cell-card">
-						<div class="hw-cell-top">
-							<span>${_('内核硬件 PWM')}</span>
-							<span class="hw-pill" style="background:${hwBadgeBg};color:${hwBadgeColor}">
-								${hwPwmOk ? _('就绪可用') : _('未挂载')}
-							</span>
-						</div>
-						<div class="hw-cell-main" style="font-size:17px;">
-							${hwPwmOk ? 'pwm-fan' : _('无可用节点')}
-						</div>
-						<div class="hw-cell-sub">
-							${hwPwmOk ? hw.hw_pwm : (emmcIs16g ? _('16GB 版本未引出硬件通道') : _('设备树未配置定时器'))}
-						</div>
-					</div>
-
-					<!-- 软件 PWM 卡片 -->
-					<div class="hw-cell-card">
-						<div class="hw-cell-top">
-							<span>${_('GPIO 软中断模块')}</span>
-							<span class="hw-pill" style="background:${swBadgeBg};color:${swBadgeColor}">
-								${swLoaded ? _('已加载运行') : _('未激活')}
-							</span>
-						</div>
-						<div class="hw-cell-main" style="font-size:17px;">
-							${swLoaded ? 'airpi_gpio_fan' : _('模块挂起')}
-						</div>
-						<div class="hw-cell-sub" id="deck-duty-desc">
-							${swLoaded ? _('当前输出占空比: ') + (hw.duty || 'na') : _('保存配置后轻触下方重载按钮')}
-						</div>
-					</div>
-				</div>
-			</div>
-		</div>`;
-	},
-
-	render: function(data) {
-		var hw = parseCfgKV(data[0]);
-		var self = this;
-		var m, s, o;
-
-		// 模拟引擎基准占空比（真实值；波形围绕真实值做正弦漂移仅为视觉效果）
-		var rd0 = parseInt(hw.duty, 10);
-		if (isNaN(rd0)) rd0 = parseInt(hw.fanspd, 10);
-		self.simBaseRatio = isNaN(rd0) ? (hw.softpwm_loaded === '1' ? 0.5 : 0) : rd0 / 255;
-
-		m = new form.Map('airpi-fan', _('风扇驱动与硬件配置'),
-			_('针对 AirPi AP3000M 路由器的内核级温控参数与 PWM 信号发生器管理。'));
-
-		s = m.section(form.TypedSection, 'fan', '');
-		s.anonymous = true;
-		s.addremove = false;
-
-		/* ---- 顶部动态视觉看板已移出表单（见 render 末尾），避免被表单列宽挤压 ---- */
-
-		/* ---- 驱动模式选择 ---- */
-		o = s.option(form.ListValue, 'fan_driver', _('风扇驱动调度策略'),
-			_('自动模式可根据 eMMC 硬件规格自动适配最优驱动方案，亦可手动指定内核驱动模式。'));
-		o.value('auto', _('自动感知与适配 (推荐)'));
-		o.value('pwm', _('硬件 PWM (内核定时器 pwm-fan)'));
-		o.value('softpwm', _('软件 PWM (GPIO 软中断高精模块)'));
-		o.default = 'auto';
-		o = s.option(form.Value, 'fan_gpio', _('风扇引脚 GPIO 编号'),
-			_('用于软 PWM 调制的输出引脚。AP3000M 默认为 540 (gpiochip512 offset 28)。'));
-		o.datatype = 'uinteger';
-		o.default = '540';
-		o.placeholder = '540';
-		o.depends('fan_driver', 'softpwm');
-
-		o = s.option(form.Value, 'fan_freq', _('调制脉冲信号周期 (μs)'),
-			_('PWM 脉冲周期，单位微秒。默认 15000μs (约 66.7Hz)。'));
-		o.datatype = 'uinteger';
-		o.default = '15000';
-		o.placeholder = '15000';
-		o.depends('fan_driver', 'softpwm');
-
-		/* ---- 重新加载驱动动作 ---- */
-		o = s.option(form.Button, '_apply_driver', _('驱动热重载'),
-			_('下发配置并触发 airpi-fanctl 重新探测内核驱动环境。'));
-		o.inputtitle = _('立即重新加载驱动');
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			return uci.save().then(function() {
-				return fs.exec(CTL, ['reload']);
-			}).then(function(res) {
-				var kv = parseCfgKV(res.stdout || '');
-				ui.addNotification(null,
-					E('p', {}, kv.msg || _('内核驱动热重载成功')), 'info');
-				window.setTimeout(function() { window.location.reload(); }, 1200);
-			}).catch(function(e) {
-				ui.addNotification(null,
-					E('p', {}, _('重载驱动失败: ') + (e && e.message ? e.message : e)), 'error');
-			});
+	[['temp_high', _('高温阈值 (℃)'), '85', 20, 120, 'duty_high', _('高温占空比 (0-255)'), '255'],
+		['temp_mid', _('中温阈值 (℃)'), '60', 20, 120, 'duty_mid', _('中温占空比 (0-255)'), '192'],
+		['temp_low', _('低温阈值 (℃)'), '50', 20, 120, 'duty_low', _('低温占空比 (0-255)'), '128']
+	].forEach(function(row) {
+		var t = s.option(form.Value, row[0], row[1],
+			_('温度达到该值时进入更高一档；回落超过迟滞量后才降档。'));
+		t.datatype = 'and(float,min(' + row[4] + '),max(' + row[5] + '))';
+		t.default = row[2];
+		t.validate = function(sid, value) {
+			var n = parseFloat(value);
+			if (isNaN(n))
+				return _('请输入温度数值');
+			if (n < row[4] || n > row[5])
+				return _('温度需在 %d 到 %d ℃ 之间').format(row[4], row[5]);
+			return true;
 		};
+		var d = s.option(form.Value, row[6], row[7], _('0 为停转，255 为满速。'));
+		d.datatype = 'and(uinteger,min(0),max(255))';
+		d.default = row[8];
+		d.validate = function(sid, value) {
+			var n = parseInt(value, 10);
+			if (isNaN(n) || n < 0 || n > 255)
+				return _('占空比需在 0 到 255 之间');
+			return true;
+		};
+	});
 
-		// 实时轮询：挂钩示波器与风扇动画，实现真正“有实际效果”的实时刷新
-		poll.add(function() {
-			return fs.exec(CTL, ['hwdetect']).then(function(r) {
-				var curHw = parseCfgKV(r.stdout || '');
-				var d = parseInt(curHw.duty, 10);
-				if (isNaN(d)) d = parseInt(curHw.fanspd, 10);
-				if (isNaN(d)) return;
+	var idle = s.option(form.Value, 'duty_idle', _('基础占空比 (0-255)'),
+		_('低于低温阈值时保持的风扇档位。'));
+	idle.datatype = 'and(uinteger,min(0),max(255))';
+	idle.default = '64';
 
-				var rRatio = Math.min(Math.max(d / 255, 0), 1);
-				self.simBaseRatio = rRatio;
-				if (self.simNext !== undefined)
-					self.simNext = 0;   // 基线变化后立即重抽随机漂移目标
-				var waveDom = document.getElementById('scope-dynamic-wave');
-				var pctBadge = document.getElementById('scope-pct-badge');
-				var rawBadge = document.getElementById('scope-raw-badge');
-				var rotorDom = document.getElementById('hw-live-rotor');
-				var dutyLbl = document.getElementById('svg-duty-label');
-				var descDom = document.getElementById('deck-duty-desc');
+	var interval = s.option(form.Value, 'auto_interval', _('控制周期 (秒)'),
+		_('自动模式的采样与调节间隔。周期越短响应越快，采样开销也越高。'));
+	interval.datatype = 'and(uinteger,min(2),max(300))';
+	interval.default = '8';
 
-				if (waveDom) waveDom.setAttribute('d', calculatePWMPath(rRatio));
-				if (pctBadge) pctBadge.textContent = (rRatio * 100).toFixed(1) + '%';
-				if (rawBadge) rawBadge.textContent = String(d);
-				if (dutyLbl) dutyLbl.textContent = 'GPIO 540 · 占空比: ' + d;
-				if (descDom) descDom.textContent = _('当前输出占空比: ') + d;
+	var hyst = s.option(form.Value, 'hysteresis', _('降档迟滞 (℃)'),
+		_('温度需低于阈值减去该值才允许降档，用于抑制风扇抖动。'));
+	hyst.datatype = 'and(float,min(0),max(15))';
+	hyst.default = '2';
 
-				if (rotorDom) {
-					if (rRatio <= 0) {
-						rotorDom.classList.add('stopped');
-					} else {
-						rotorDom.classList.remove('stopped');
-						var dur = Math.max(0.18, (1 - rRatio) * 1.5 + 0.2).toFixed(2) + 's';
-						rotorDom.style.setProperty('--rotor-dur', dur);
-					}
-				}
-			}).catch(function() {});
-		}, 4);
+	var hold = s.option(form.Value, 'min_hold', _('降档最小保持 (秒)'),
+		_('两次降档之间的最短间隔。升温调整不受该限制。'));
+	hold.datatype = 'and(uinteger,min(0),max(600))';
+	hold.default = '30';
 
-		// 顶部看板作为表单的兄弟节点渲染，占满统一版心（不再受表单单元格宽度挤压）。
-		// 注意：E() 不接受 Promise 子节点，必须先等 m.render() 完成再组合。
-		var deckHost = E('div', { 'class': 'hw-deck-host' });
-		deckHost.innerHTML = self.buildHardwareDeck(hw);
+	return m;
+}
 
-		// 模拟波形动画引擎：requestAnimationFrame 连续滚动 + 占空比随机漂移。
-		// 随机策略：每 0.7~1.6s 抽取一个随机目标偏移，再以约 400ms 时间常数缓动逼近，
-		// 视觉上随机且平滑不抖动。真实占空比仍由 4s 轮询写入 self.simBaseRatio，
-		// 漂移只是视觉层，不改设备。
-		(function() {
-			var waveEl = deckHost.querySelector('#scope-dynamic-wave');
-			if (!waveEl)
-				return;
-			var phase = 0, last = null;
-			self.simCur = null;
-			self.simTarget = self.simBaseRatio || 0;
-			self.simNext = 0;
-			function frame(ts) {
-				if (last === null)
-					last = ts;
-				var dt = Math.min(ts - last, 100);
-				last = ts;
-				phase = (phase + dt * 0.036) % 48;   // 约 36px/s 无缝滚动（一个周期 48px）
-				waveEl.style.transform = 'translateX(' + (-phase).toFixed(2) + 'px)';
-				if (ts >= self.simNext) {
-					self.simNext = ts + 700 + Math.random() * 900;
-					var amp = 0.05 + Math.random() * 0.05;   // 偏移幅度 0.05~0.10
-					self.simTarget = (self.simBaseRatio || 0) + (Math.random() < 0.5 ? -amp : amp);
-				}
-				var sim = (self.simCur === null) ? (self.simBaseRatio || 0) : self.simCur;
-				sim += (self.simTarget - sim) * Math.min(1, dt / 400);
-				self.simCur = Math.min(Math.max(sim, 0.02), 0.98);
-				waveEl.setAttribute('d', calculatePWMPath(self.simCur));
-				window.requestAnimationFrame(frame);
-			}
-			window.requestAnimationFrame(frame);
-		})();
+function makeSensorMap(self) {
+	var m = new form.Map(CONFIG, _('传感器与采样'),
+		_('仅展示本设备实际可用的温度来源。停用某个来源可减少外部命令调用。'));
 
-		return m.render().then(function(formEl) {
-			return E('div', { 'class': 'hw-page' }, [deckHost, formEl]);
-		});
-	}
-};
+	var s = sectionOf(m, _('温度来源'));
+	[['src_cpu', _('CPU 核心温度'), '来自 /sys/class/thermal/thermal_zone*/temp。'],
+		['src_phy', _('网络交换温度'), '来自 /sys/class/hwmon/*/temp1_input。'],
+		['src_wifi', _('Wi-Fi 射频温度'), '来自 iwpriv <iface> stat，需要调用外部命令。'],
+		['src_modem', _('通信模组温度'), '来自 ubus call modem_ctrl info，需要调用外部命令。']
+	].forEach(function(row) {
+		var o = s.option(form.Flag, row[0], row[1], _(row[2]));
+		o.default = '1';
+		o.rmempty = false;
+	});
+
+	var slow = s.option(form.Value, 'slow_interval', _('外部命令采样周期 (秒)'),
+		_('Wi-Fi 与模组温度需要 fork 外部命令，按该周期低频采样，其余时间沿用上一次读数。'));
+	slow.datatype = 'and(uinteger,min(5),max(600))';
+	slow.default = '30';
+
+	return m;
+}
+
+function makeAdvancedMap(self) {
+	var m = new form.Map(CONFIG, _('高级设置'),
+		_('驱动选择、安全兜底与诊断参数。修改驱动相关项前请确认设备实际接线与内核模块状态。'));
+
+	var d = sectionOf(m, _('风扇驱动'),
+		_('auto 依据 eMMC 容量判定硬件 PWM 或 GPIO 软件 PWM；错误组合会导致服务无法启动。'));
+	var driver = d.option(form.ListValue, 'fan_driver', _('驱动调度策略'));
+	driver.value('auto', _('自动感知 (推荐)'));
+	driver.value('pwm', _('硬件 PWM (pwm-fan)'));
+	driver.value('softpwm', _('软件 PWM (airpi_gpio_fan)'));
+	driver.default = 'auto';
+	var gpio = d.option(form.Value, 'fan_gpio', _('软件 PWM 引脚 (GPIO 编号)'),
+		_('AP3000M 常见为 540 (gpiochip512 offset 28)。修改后守护进程会重新加载内核模块。'));
+	gpio.datatype = 'and(uinteger,min(0),max(1023))';
+	gpio.default = '540';
+	gpio.depends('fan_driver', 'softpwm');
+	var freq = d.option(form.Value, 'fan_freq', _('PWM 周期 (微秒)'),
+		_('默认 15000μs ≈ 66.7Hz。修改后由守护进程热更新内核模块参数。'));
+	freq.datatype = 'and(uinteger,min(100),max(1000000))';
+	freq.default = '15000';
+	freq.depends('fan_driver', 'softpwm');
+
+	var safety = sectionOf(m, _('安全与兜底'),
+		_('这些参数决定异常时的散热行为，请谨慎下调。'));
+	var crit = safety.option(form.Value, 'temp_crit', _('温控守护触发温度 (℃)'),
+		_('手动或无级模式下超过该温度时，守护进程会临时接管并拉满风扇。'));
+	crit.datatype = 'and(float,min(20),max(120))';
+	crit.default = '95';
+	var guard = safety.option(form.Flag, 'crit_guard', _('启用温控守护'),
+		_('关闭后手动档位将持续生效，即使温度过高。仅建议在排查问题时短时关闭。'));
+	guard.default = '1';
+	guard.rmempty = false;
+	var failduty = safety.option(form.Value, 'fail_duty', _('传感器失效占空比 (0-255)'),
+		_('连续取不到有效温度时使用的兜底档位，默认满速。'));
+	failduty.datatype = 'and(uinteger,min(0),max(255))';
+	failduty.default = '255';
+	var failcount = safety.option(form.Value, 'fail_count', _('判定失效的连续次数'),
+		_('避免单次采样抖动就触发兜底。'));
+	failcount.datatype = 'and(uinteger,min(1),max(10))';
+	failcount.default = '3';
+	var stop = safety.option(form.Value, 'stop_duty', _('服务停止后保留占空比 (0-255)'),
+		_('服务停止时写入风扇接口的保底档位；历史版本写 0 会直接停转。'));
+	stop.datatype = 'and(uinteger,min(0),max(255))';
+	stop.default = '64';
+
+	var diag = sectionOf(m, _('诊断'));
+	var loglevel = diag.option(form.ListValue, 'log_level', _('日志级别'),
+		_('日志写入 /tmp/airpi-fancontrol.log（不落在 Flash 上），并转发到系统日志。'));
+	loglevel.value('0', _('关闭'));
+	loglevel.value('1', _('仅错误'));
+	loglevel.value('2', _('信息'));
+	loglevel.value('3', _('调试'));
+	loglevel.default = '2';
+
+	return m;
+}
+
+/* ------------------------------- 视图主体 ------------------------------- */
+
+/*
+ * 未保存提醒。监听器在模块作用域只注册一次(避免视图重建时累积)，
+ * 实例通过共享的 dirty 标记告知是否有未保存的表单编辑。
+ * 浏览器只在整页离开(刷新/关闭/地址跳转)时触发 beforeunload；
+ * LuCI 站内 SPA 切换不会触发它，切换标签页本身也不会丢编辑内容。
+ */
+var dirty = { flag: false };
+var unloadListenerBound = false;
+
+function armUnloadGuard() {
+	if (unloadListenerBound)
+		return;
+	unloadListenerBound = true;
+	window.addEventListener('beforeunload', function(ev) {
+		if (!dirty.flag)
+			return;
+		ev.preventDefault();
+		ev.returnValue = '';
+	});
+}
 
 return view.extend({
-	currentSpeed: 0,
-	currentTemp: 0,
+	tab: 'overview',
+	root: null,
 	refs: {},
+	history: [],
+	panels: {},
+	seq: 0,
+	tick: 0,
+	inflight: false,
+	busy: false,
+	status: {},
+	hw: null,
+	hwPending: false,
+	logsPending: false,
 
 	load: function() {
 		return Promise.all([
-			ctl(['status']).catch(function() { return { stdout: '' }; }),
-			ctl(['temp']).catch(function() { return { stdout: '' }; }),
-			ctl(['temps']).catch(function() { return { stdout: '' }; })
+			ctl(['snapshot']).then(function(r) {
+				return r.stdout || '';
+			}).catch(function() {
+				return '';
+			}),
+			uci.load(CONFIG)
 		]);
 	},
 
-	makeModeButton: function(icon, title, meta, handler) {
-		var btn = E('button', { 'class': 'gf-btn-mode', 'type': 'button' }, [
-			E('span', { 'style': 'display:flex' }),
-			E('span', { 'class': 'gf-btn-title' }, title),
-			E('span', { 'class': 'gf-btn-meta' }, meta)
-		]);
-		btn.firstChild.innerHTML = icon;
-		btn.addEventListener('click', handler);
-		btn.dataset.mode = title;
-		return btn;
+	/* ------------------------------ 状态读取 ------------------------------ */
+
+	fetch: function() {
+		var self = this;
+
+		/* 上一轮还没回来就跳过，避免慢响应堆积 */
+		if (this.inflight)
+			return Promise.resolve();
+
+		this.inflight = true;
+		var seq = ++this.seq;
+
+		return ctl(['snapshot']).then(function(res) {
+			if (seq !== self.seq)
+				return;
+			self.applyStatus(parseKV(res.stdout));
+		}).catch(function(e) {
+			if (seq !== self.seq)
+				return;
+			self.applyStatus({ alarm: 'interface', alarm_msg: _('状态读取失败: ') + (e && e.message ? e.message : e) });
+		}).then(function() {
+			if (seq === self.seq)
+				self.inflight = false;
+		});
 	},
+
+	applyStatus: function(st) {
+		if (!st || !Object.keys(st).length)
+			return;
+
+		this.status = st;
+
+		/* 以快照时间戳去重，避免轮询比控制周期快时把同一条采样塞进历史多次 */
+		var ts = num(st.ts, 0),
+			temp = flt(st.temp, NaN),
+			last = this.history[this.history.length - 1];
+
+		if (!last || last.ts !== ts) {
+			this.history.push({
+				ts: ts,
+				temp: isNaN(temp) ? null : temp,
+				duty: num(st.duty, 0)
+			});
+			if (this.history.length > HISTORY_LIMIT)
+				this.history.shift();
+		}
+
+		this.paint();
+	},
+
+	/* 温控曲线：优先用编辑中的表单值，便于在保存前预览 */
+	curveConfig: function() {
+		var staged = this.readStagedCurve();
+		var st = this.status;
+		var text = String(st.policy || '').trim();
+		var fallback = [
+			[85, 255], [60, 192], [50, 128]
+		];
+		var curve = fallback.slice();
+
+		if (text) {
+			var parsed = [];
+			text.split(/\s+/).forEach(function(pair) {
+				var kv = pair.split(':');
+				if (kv.length === 2 && kv[0] !== '*')
+					parsed.push([parseFloat(kv[0]), parseInt(kv[1], 10)]);
+			});
+			if (parsed.length === 3)
+				curve = parsed;
+		}
+
+		var base = {
+			temp_high: staged.temp_high != null ? staged.temp_high : curve[0][0],
+			temp_mid: staged.temp_mid != null ? staged.temp_mid : curve[1][0],
+			temp_low: staged.temp_low != null ? staged.temp_low : curve[2][0],
+			duties: [
+				staged.duty_idle != null ? staged.duty_idle : (curve[2][1] != null ? num(curve[2][1], 64) : 64),
+				staged.duty_low != null ? staged.duty_low : num(curve[2][1], 128),
+				staged.duty_mid != null ? staged.duty_mid : num(curve[1][1], 192),
+				staged.duty_high != null ? staged.duty_high : num(curve[0][1], 255)
+			],
+			temp_crit: staged.temp_crit != null ? staged.temp_crit : flt(uciget('temp_crit'), 95),
+			now: flt(st.temp, NaN),
+			nowDuty: num(st.duty, 0)
+		};
+		if (isNaN(base.now))
+			base.now = 20;
+		return base;
+	},
+
+	readStagedCurve: function() {
+		var out = {},
+			keys = ['temp_high', 'temp_mid', 'temp_low', 'duty_idle', 'duty_low',
+				'duty_mid', 'duty_high', 'temp_crit'];
+
+		/* 表单输入框里的值优先，其次 uci 暂存值 */
+		keys.forEach(function(key) {
+			var el = document.getElementById('cbid.' + CONFIG + '.' + SECTION + '.' + key);
+			var raw = null;
+			if (el && el.value != null && el.value !== '')
+				raw = el.value;
+			else
+				raw = uci.get(CONFIG, SECTION, key);
+			var n = parseFloat(raw);
+			if (!isNaN(n))
+				out[key] = n;
+		});
+		return out;
+	},
+
+	/* ------------------------------ 渲染骨架 ------------------------------ */
 
 	render: function(data) {
 		var self = this;
 
-		// 1. 顶部白毛玻璃导航条
-		var nav = E('div', { 'class': 'gf-nav' }, [
-			E('div', { 'class': 'gf-brand' }, [
-				E('div', { 'class': 'gf-logo-badge' }),
-				E('div', {}, [
-					E('div', { 'class': 'gf-title' }, _('AirPi 智能温控工作台')),
-					E('div', { 'class': 'gf-subtitle' }, _('PWM 线性调速 · 闭环感知调度'))
-				])
-			]),
-			E('div', { 'class': 'gf-status-tag' }, [
-				E('div', { 'class': 'gf-status-dot' }),
-				E('span', { 'id': 'gf-status-text' }, _('自适应巡航'))
-			])
+		this.applyStatus(parseKV(data[0]));
+
+		this.root = E('div', { 'class': 'ap-root' }, [
+			E('style', { 'type': 'text/css' }, CSS)
 		]);
-		nav.querySelector('.gf-logo-badge').innerHTML = ICONS.fan;
+		detectTheme(this.root);
 
-		// 2. 左侧：风扇涡轮座舱
-		var stage = E('div', { 'class': 'gf-stage' });
-		stage.innerHTML = renderSolidGlacierSVG();
+		this.header = this.buildHeader();
+		this.nav = this.buildNav();
+		this.root.appendChild(this.header);
+		this.root.appendChild(this.nav);
 
-		var heroPct = E('div', { 'class': 'gf-hero-pct' }, '0%');
-		var heroDesc = E('div', { 'class': 'gf-hero-desc' }, _('已停机待命'));
-
-		var chipRpm = E('div', { 'class': 'gf-chip' }, [
-			E('div', { 'class': 'gf-chip-lbl' }, _('估算转速')),
-			E('div', { 'class': 'gf-chip-val' }, '0 RPM')
-		]);
-		var chipDba = E('div', { 'class': 'gf-chip' }, [
-			E('div', { 'class': 'gf-chip-lbl' }, _('声学噪声')),
-			E('div', { 'class': 'gf-chip-val' }, '< 10 dBA')
-		]);
-		var chipFlow = E('div', { 'class': 'gf-chip' }, [
-			E('div', { 'class': 'gf-chip-lbl' }, _('有效风压')),
-			E('div', { 'class': 'gf-chip-val' }, '0.0 CFM')
-		]);
-
-		var chipsRow = E('div', { 'class': 'gf-chips-row' }, [ chipRpm, chipDba, chipFlow ]);
-
-		var fanCard = E('div', { 'class': 'gf-fan-card' }, [
-			stage,
-			E('div', { 'class': 'gf-telemetry-hud' }, [
-				heroPct,
-				heroDesc,
-				chipsRow
-			])
-		]);
-
-		// 3. 右侧：控制矩阵（标定合理转速）
-		var modesGrid = E('div', { 'class': 'gf-modes-grid' }, [
-			this.makeModeButton(ICONS.silent, _('静音'), '25% · ~1080 RPM', function() { self.setManual(64, 0); }),
-			this.makeModeButton(ICONS.cruise, _('巡航'), '50% · ~1650 RPM', function() { self.setManual(128, 1); }),
-			this.makeModeButton(ICONS.turbo, _('强冷'), '75% · ~2230 RPM', function() { self.setManual(192, 2); }),
-			this.makeModeButton(ICONS.max, _('全速'), '100% · 2800 RPM', function() { self.setManual(255, 3); }),
-			this.makeModeButton(ICONS.smart, _('智能'), 'AI · 动态巡航', function() { self.setAuto(); }),
-			this.makeModeButton(ICONS.slider, _('无极'), '自定义线性推力', function() { self.toggleStepless(); })
-		]);
-
-		var sliderCtrl = E('input', {
-			'type': 'range', 'class': 'gf-slider',
-			'min': '0', 'max': '255', 'value': '255'
+		/* 单个委托监听器即可覆盖三个表单，容器随视图一起销毁 */
+		armUnloadGuard();
+		this.root.addEventListener('change', function(ev) {
+			if (ev.target && ev.target.closest && ev.target.closest('.ap-form'))
+				dirty.flag = true;
 		});
-		var sliderBadge = E('span', { 'style': 'color:var(--gf-blue);font-weight:700;' }, 'PWM 255 (100%)');
-		var sliderBox = E('div', { 'class': 'gf-slider-box' }, [
-			E('div', { 'class': 'gf-slider-head' }, [
-				E('span', {}, _('线性阻尼推杆')),
-				sliderBadge
-			]),
-			sliderCtrl
-		]);
 
-		var tacticalPanel = E('div', { 'class': 'gf-panel' }, [
-			E('div', { 'class': 'gf-panel-head' }, [
-				E('div', { 'class': 'gf-panel-title' }, [
-					E('span', { 'style': 'display:flex' }),
-					_('动力调度模式')
-				]),
-				E('span', { 'style': 'font-size:11px;color:var(--gf-text-dim);' }, _('即时切换'))
-			]),
-			modesGrid,
-			sliderBox
-		]);
-		tacticalPanel.querySelector('.gf-panel-title span').innerHTML = ICONS.gear;
+		TABS.forEach(function(t) {
+			var panel = E('div', {
+				'class': 'ap-panel',
+				'id': 'ap-panel-' + t.id,
+				'role': 'tabpanel',
+				'aria-labelledby': 'ap-tab-' + t.id
+			});
+			self.panels[t.id] = panel;
+			self.root.appendChild(panel);
+		});
 
-		// 4. 右侧：多温区矩阵
-		var sensorsGrid = E('div', { 'class': 'gf-sensors-grid' });
-		var thermalPanel = E('div', { 'class': 'gf-panel' }, [
-			E('div', { 'class': 'gf-panel-head' }, [
-				E('div', { 'class': 'gf-panel-title' }, [
-					E('span', { 'style': 'display:flex' }),
-					_('板载传感器温控阵列')
-				]),
-				E('span', { 'id': 'gf-thermal-badge', 'style': 'font-size:11px;color:var(--gf-text-dim);' }, _('动态巡检'))
-			]),
-			sensorsGrid
-		]);
-		thermalPanel.querySelector('.gf-panel-title span').innerHTML = ICONS.temp;
+		this.buildOverview();
+		this.buildControl();
+		this.buildSensors();
 
-		var controlStack = E('div', { 'class': 'gf-control-stack' }, [
-			tacticalPanel,
-			thermalPanel
-		]);
+		/* 三个表单各自归属一个标签页，渲染完成后放入对应面板；任一失败只影响该页 */
+		[['curve', makeCurveMap, self.onCurvePanelReady],
+			['sensors', makeSensorMap, null],
+			['advanced', makeAdvancedMap, self.onAdvancedPanelReady]].forEach(function(spec) {
+			var panel = self.panels[spec[0]];
+			var host = E('div', { 'class': 'ap-form' });
+			var err = E('div', { 'class': 'ap-alert is-danger hidden' });
+			panel.appendChild(err);
+			panel.appendChild(host);
+			spec[1](self).render().then(function(el) {
+				host.appendChild(el);
+				if (spec[2])
+					spec[2].call(self, panel);
+			}).catch(function(e) {
+				dom.content(err, _('表单加载失败: ') + (e && e.message ? e.message : e));
+				err.classList.remove('hidden');
+			});
+		});
 
-		// 5. 组合主布局
-		var cockpitGrid = E('div', { 'class': 'gf-cockpit-grid' }, [
-			fanCard,
-			controlStack
-		]);
+		var initial = (location.hash || '').replace('#', '');
+		this.activateTab(TABS.some(function(t) { return t.id === initial; }) ? initial : 'overview', true);
 
-		this.refs = {
-			rotor: stage.querySelector('#fanRotorGroup'),
-			arc: stage.querySelector('#gf-speed-arc'),
-			ripples: stage.querySelectorAll('#airflowRipples.wind-wave'),
-			heroPct: heroPct,
-			heroDesc: heroDesc,
-			chipRpm: chipRpm.querySelector('.gf-chip-val'),
-			chipDba: chipDba.querySelector('.gf-chip-val'),
-			chipFlow: chipFlow.querySelector('.gf-chip-val'),
-			modesGrid: modesGrid,
-			sliderBox: sliderBox,
-			sliderCtrl: sliderCtrl,
-			sliderBadge: sliderBadge,
-			sensorsGrid: sensorsGrid,
-			thermalBadge: thermalPanel.querySelector('#gf-thermal-badge'),
-			statusText: nav.querySelector('#gf-status-text')
+		/* 用 onhashchange 赋值而非 addEventListener: 视图重建时不会累积监听器 */
+		window.onhashchange = function() {
+			var id = (location.hash || '').replace('#', '');
+			if (TABS.some(function(t) { return t.id === id; }))
+				self.activateTab(id);
 		};
 
-		var debounceTimer = null;
-		sliderCtrl.addEventListener('input', function() {
-			var v = parseInt(sliderCtrl.value, 10) || 0;
-			var pct = Math.round((v / 255) * 100);
-			sliderBadge.textContent = 'PWM ' + v + ' (' + pct + '%)';
-			self.updateTelemetry(v);
-			if (debounceTimer)
-				window.clearTimeout(debounceTimer);
-			debounceTimer = window.setTimeout(function() {
-				ctl(['stepless', String(v)]).catch(function() {});
-			}, 150);
-		});
+		/*
+		 * LuCI 的 poll.add(fn, interval) 没有"绑定节点自动回收"的语义，回调会一直
+		 * 活到整页刷新。这里保存绑定后的引用，并在容器离开文档时主动 poll.remove，
+		 * 避免站内导航反复累积轮询任务。
+		 */
+		this.pollFn = L.bind(this.pollTick, this);
+		poll.add(this.pollFn, POLL_INTERVAL);
 
-		// 初始数据载入
-		if (data && data[0]) this.applyStatus(parseKV(data[0].stdout));
-		if (data && data[1]) this.applyTemp(parseKV(data[1].stdout));
-		if (data && data[2]) this.applyTemps(parseKV(data[2].stdout));
+		return this.root;
+	},
 
-		// 轮询服务
-		poll.add(L.bind(function() {
-			return Promise.all([
-				ctl(['status']).catch(function() { return { stdout: '' }; }),
-				ctl(['temp']).catch(function() { return { stdout: '' }; }),
-				ctl(['temps']).catch(function() { return { stdout: '' }; })
-			]).then(function(res) {
-				self.applyStatus(parseKV(res[0].stdout));
-				self.applyTemp(parseKV(res[1].stdout));
-				self.applyTemps(parseKV(res[2].stdout));
-			});
-		}, this), 4);
+	pollTick: function() {
+		/* 容器已被移除(站内导航): 注销自己，不再持有任何 DOM 引用 */
+		if (!this.root || !document.body.contains(this.root)) {
+			if (this.pollFn)
+				poll.remove(this.pollFn);
+			return Promise.resolve();
+		}
 
-		// 合并后的硬件总线配置面板（原独立设置子页，现已并入同一页面）
-		var cfgHost = E('div', { 'class': 'gf-cfg-host' });
-		var cfgWrap = E('div', { 'class': 'gf-cfg-section' }, [
-			E('div', { 'class': 'gf-cfg-head' }, [
-				E('span', { 'class': 'gf-cfg-title' }, _('硬件总线与内核配置')),
-				E('span', { 'class': 'gf-cfg-sub' }, _('驱动 / GPIO / 调制周期 · 实时 PWM 示波器'))
+		/* 浏览器后台标签不做任何请求；回到前台下一轮自动恢复 */
+		if (document.hidden)
+			return Promise.resolve();
+
+		this.tick++;
+		var chain = [this.fetch()];
+
+		if (this.tab === 'advanced' && !this.hwPending && this.tick % 3 === 0)
+			chain.push(this.fetchHardware());
+
+		return Promise.all(chain);
+	},
+
+	buildHeader: function() {
+		var self = this;
+		var host = E('header', { 'class': 'ap-header' }, [
+			E('div', { 'class': 'ap-header-mark' }),
+			E('div', { 'class': 'ap-header-text' }, [
+				E('div', { 'class': 'ap-header-title' }, _('AirPi AP3000M 温控工作台')),
+				E('div', { 'class': 'ap-header-sub' }, _('PWM 调速 · 由 airpi-fanctl 守护进程独立执行'))
 			]),
-			cfgHost
+			E('div', { 'class': 'ap-header-status' }, [
+				pill(_('连接中'), 'muted')
+			])
 		]);
+		host.querySelector('.ap-header-mark').innerHTML = icon(ICON.fan, 22);
+		this.refs.headerStatus = host.querySelector('.ap-header-status');
+		return host;
+	},
 
-		// 配置面板数据装载复刻原设置视图的 load()，再用纯对象调用其 render。
-		// 全流程放进 Promise 链：任何异常只影响配置区，不会拖垮主座舱渲染。
-		Promise.resolve().then(function() {
-			return HWCfg.load();
-		}).then(function(d) {
-			return HWCfg.render.call(HWCfg, d);
-		}).then(function(el) {
-			if (el) cfgHost.appendChild(el);
-		}).catch(function(e) {
-			dom.content(cfgHost, E('div', { 'class': 'gf-cfg-error' },
-				_('配置面板加载失败: ') + (e && e.message ? e.message : e)));
+	buildNav: function() {
+		var self = this;
+		var nav = E('nav', { 'class': 'ap-tabs', 'role': 'tablist', 'aria-label': _('功能分区') });
+		this.refs.tabButtons = {};
+		TABS.forEach(function(t) {
+			var btn = E('button', {
+				'class': 'ap-tab',
+				'id': 'ap-tab-' + t.id,
+				'type': 'button',
+				'role': 'tab',
+				'aria-selected': 'false',
+				'tabindex': '-1'
+			}, [_(t.label)]);
+			btn.addEventListener('click', function() {
+				self.activateTab(t.id);
+			});
+			nav.appendChild(btn);
+			self.refs.tabButtons[t.id] = btn;
+		});
+		return nav;
+	},
+
+	activateTab: function(id, silent) {
+		var self = this;
+		this.tab = id;
+
+		TABS.forEach(function(t) {
+			var btn = self.refs.tabButtons[t.id];
+			var panel = self.panels[t.id];
+			if (!btn || !panel)
+				return;
+			var on = t.id === id;
+			btn.setAttribute('aria-selected', on ? 'true' : 'false');
+			btn.setAttribute('tabindex', on ? '0' : '-1');
+			panel.classList.toggle('is-active', on);
+			/* 风扇动画只在进行中的标签页里跑，切走即暂停，省 CPU */
 		});
 
-		return E('div', { 'class': 'gf-container' }, [
-			E('style', { 'type': 'text/css' }, CSS),
-			nav,
-			cockpitGrid,
-			cfgWrap
+		if (!silent && (location.hash || '').replace('#', '') !== id)
+			history.replaceState(null, '', '#' + id);
+
+		/* 立刻用已有状态重绘，动画/可见性不必等下一轮轮询 */
+		if (this.root && Object.keys(this.status).length)
+			this.paint();
+
+		if (id === 'advanced' && !this.hw)
+			this.fetchHardware();
+		if (id === 'curve')
+			this.paintCurve();
+	},
+
+	/* --------------------------- 各标签页结构 --------------------------- */
+
+	buildOverview: function() {
+		var stage = fanVisual();
+		this.refs.rotor = stage.querySelector('.ap-rotor');
+
+		this.refs.dutyBig = E('div', { 'class': 'ap-readout-big' }, '—');
+		this.refs.dutyCap = E('div', { 'class': 'ap-readout-cap' }, _('等待守护进程数据'));
+
+		var fanCard = card({
+			title: '风扇运行状态',
+			icon: 'fan',
+			meta: pill(_('未连接'), 'muted'),
+			body: [stage, E('div', { 'class': 'ap-readout' }, [this.refs.dutyBig, this.refs.dutyCap])]
+		});
+		this.refs.fanMeta = fanCard.querySelector('.ap-card-meta');
+
+		this.refs.runRows = E('div', {});
+		var runCard = card({
+			title: '控制链路',
+			icon: 'gauge',
+			meta: pill(_('实时'), 'info'),
+			body: [this.refs.runRows]
+		});
+
+		this.refs.alarmHost = E('div', {});
+		var alarmCard = card({
+			title: '告警与自检',
+			icon: 'alarm',
+			body: [this.refs.alarmHost]
+		});
+
+		this.refs.tempChips = E('div', { 'class': 'ap-chips' });
+		var tempCard = card({
+			title: '温度来源',
+			icon: 'temp',
+			meta: E('span', {}, _('热源: —')),
+			body: [this.refs.tempChips]
+		});
+		this.refs.tempMeta = tempCard.querySelector('.ap-card-meta');
+
+		this.refs.trendHost = E('div', {});
+		var trendCard = card({
+			title: '温度与占空比趋势',
+			icon: 'curve',
+			meta: pill(_('最近 %d 次采样').format(HISTORY_LIMIT), 'muted'),
+			body: [this.refs.trendHost, E('div', { 'class': 'ap-legend' }, [
+				E('span', {}, [E('i', { 'style': 'background:var(--ap-warn)' }), _('温度')]),
+				E('span', {}, [E('i', { 'style': 'background:var(--ap-accent)' }), _('占空比')])
+			])]
+		});
+
+		this.refs.policyHost = E('div', {});
+		var policyCard = card({
+			title: '当前生效策略',
+			icon: 'curve',
+			body: [this.refs.policyHost]
+		});
+
+		var left = E('div', {}, [fanCard, policyCard]);
+		var right = E('div', {}, [alarmCard, runCard, tempCard, trendCard]);
+		this.panels.overview.appendChild(E('div', { 'class': 'ap-split' }, [left, right]));
+	},
+
+	buildControl: function() {
+		var self = this;
+
+		var levels = [
+			{ name: '静音', duty: 64, code: 0 },
+			{ name: '巡航', duty: 128, code: 1 },
+			{ name: '强冷', duty: 192, code: 2 },
+			{ name: '全速', duty: 255, code: 3 }
+		];
+
+		this.refs.levelBtns = {};
+		var levelsHost = E('div', { 'class': 'ap-levels' });
+
+		var auto = E('button', {
+			'class': 'ap-level', 'type': 'button',
+			'style': 'grid-column:1/-1;flex-direction:row;justify-content:center;gap:10px'
+		}, [
+			svgIcon('chip', 18),
+			E('span', { 'class': 'ap-level-name' }, _('智能温控')),
+			E('span', { 'class': 'ap-level-sub' }, _('按温控曲线自动调节'))
 		]);
+		auto.addEventListener('click', function() {
+			self.command(['auto'], _('切换为智能温控'));
+		});
+		levelsHost.appendChild(auto);
+		this.refs.levelBtns.auto = auto;
+
+		levels.forEach(function(lv) {
+			var btn = E('button', { 'class': 'ap-level', 'type': 'button' }, [
+				E('span', { 'class': 'ap-level-name' }, _(lv.name)),
+				E('span', { 'class': 'ap-level-sub' }, '%d%% · PWM %d'.format(dutyPct(lv.duty), lv.duty))
+			]);
+			btn.addEventListener('click', function() {
+				self.command(['set', String(lv.duty), String(lv.code)],
+					_('%s（固定 %d%%）').format(_(lv.name), dutyPct(lv.duty)));
+			});
+			levelsHost.appendChild(btn);
+			self.refs.levelBtns[lv.code] = btn;
+		});
+
+		this.refs.slider = E('input', {
+			'class': 'ap-slider', 'type': 'range',
+			'min': '0', 'max': '255', 'step': '1', 'value': '128',
+			'aria-label': _('目标占空比')
+		});
+		this.refs.sliderText = E('span', { 'class': 'ap-slider-value' }, 'PWM 128 · 50%');
+		this.refs.sliderApply = E('button', { 'class': 'ap-btn is-primary', 'type': 'button' }, _('应用到风扇'));
+		this.refs.sliderApply.addEventListener('click', function() {
+			var v = num(self.refs.slider.value, 0);
+			self.command(['stepless', String(v)], _('无级调速 PWM %d').format(v),
+				v <= 0 ? _('设置为 0 会让风扇完全停转，散热保护随之失效。确定继续吗？') : null);
+		});
+		this.refs.slider.addEventListener('input', function() {
+			/* 拖动期间不让轮询回填滑块位置；只有"应用到风扇"成功后才交还设备值 */
+			self.sliderTouched = true;
+			var v = num(self.refs.slider.value, 0);
+			self.refs.sliderText.textContent = 'PWM %d · %d%%'.format(v, dutyPct(v));
+		});
+
+		var stepless = card({
+			title: '无级调速',
+			icon: 'slider',
+			body: [
+				E('p', { 'class': 'ap-note' }, _('拖动滑块只改预览值，点击"应用到风扇"才会真正下发，避免连续拖动反复写硬件。')),
+				E('div', { 'class': 'ap-slider-row' }, [self.refs.slider, self.refs.sliderText]),
+				E('div', { 'class': 'ap-actions' }, [self.refs.sliderApply])
+			]
+		});
+
+		var modeCard = card({
+			title: '运行模式',
+			icon: 'fan',
+			body: [
+				E('p', { 'class': 'ap-note' }, _('手动档位与无级调速会暂停自动曲线；超过临界温度时温控守护仍会临时接管。')),
+				levelsHost
+			]
+		});
+
+		this.refs.controlState = E('div', {});
+		var stateCard = card({
+			title: '设定值与实测回读',
+			icon: 'gauge',
+			body: [this.refs.controlState]
+		});
+
+		this.panels.control.appendChild(E('div', { 'class': 'ap-duo' }, [modeCard, stepless]));
+		this.panels.control.appendChild(stateCard);
 	},
 
-	/* ---------- 控制调度 ---------- */
+	buildSensors: function() {
+		var head = E('tr', {}, [
+			E('th', {}, _('来源')),
+			E('th', {}, _('实测值')),
+			E('th', {}, _('时效')),
+			E('th', {}, _('状态'))
+		]);
+		this.refs.sensorBody = E('tbody', {});
+		var table = E('table', { 'class': 'ap-table' }, [E('thead', {}, head), this.refs.sensorBody]);
 
-	setManual: function(speed, code) {
+		var tableCard = card({
+			title: '温度采样明细',
+			icon: 'temp',
+			body: [
+				E('p', { 'class': 'ap-note' }, _('本硬件仅有占空比回读，没有转速(tach)反馈，因此界面不显示转速估算值；所有温度都来自上表列出的实际接口。')),
+				table
+			]
+		});
+
+		this.refs.samplingState = E('div', {});
+		var stateCard = card({
+			title: '采集与执行',
+			icon: 'chip',
+			body: [this.refs.samplingState]
+		});
+
+		this.panels.sensors.appendChild(E('div', {}, [tableCard, stateCard]));
+	},
+
+	onCurvePanelReady: function(panel) {
 		var self = this;
-		this.hideStepless();
-		this.updateTelemetry(speed);
-		return ctl(['set', String(speed), String(code)]).then(function() {
-			self.applyStatus({ fanspd: String(speed), mode: _('手动') });
-		}).catch(function(e) {
-			ui.addNotification(null, E('p', {}, _('风扇设定失败: ') + e.message), 'error');
+		var chartHost = E('div', {});
+		panel.insertBefore(card({
+			title: '曲线预览',
+			icon: 'curve',
+			meta: pill(_('随表单实时预览'), 'info'),
+			body: [chartHost, E('p', { 'class': 'ap-note' }, _('橙色圆点是当前实测温度与占空比在曲线上的位置。'))]
+		}), panel.firstChild);
+		self.refs.curveChart = chartHost;
+
+		/* 事件委托: 只挂一个监听器，随容器一起回收 */
+		panel.addEventListener('input', function() {
+			self.paintCurve();
+		});
+		self.paintCurve();
+	},
+
+	onAdvancedPanelReady: function(panel) {
+		var self = this;
+
+		this.refs.hwHost = E('div', {}, E('p', { 'class': 'ap-note' }, _('正在探测硬件接口…')));
+		this.refs.logHost = E('div', {});
+		this.refs.serviceState = E('div', {});
+		this.refs.ioHost = E('div', {});
+
+		var hwCard = card({
+			title: '驱动与硬件接口',
+			icon: 'chip',
+			meta: E('span', {}, ''),
+			body: [this.refs.hwHost]
+		});
+		this.refs.hwMeta = hwCard.querySelector('.ap-card-meta');
+
+		var logBtn = E('button', { 'class': 'ap-btn', 'type': 'button' }, _('刷新日志'));
+		logBtn.addEventListener('click', function() {
+			self.fetchLogs();
+		});
+		var logCard = card({
+			title: '运行日志',
+			icon: 'file',
+			meta: logBtn,
+			body: [this.refs.logHost]
+		});
+
+		var reloadBtn = E('button', { 'class': 'ap-btn is-primary', 'type': 'button' }, _('重载配置'));
+		reloadBtn.addEventListener('click', function() {
+			self.reloadConfig();
+		});
+
+		var svcCard = card({
+			title: '服务状态',
+			icon: 'power',
+			body: [this.refs.serviceState, E('div', { 'class': 'ap-actions' }, [reloadBtn])]
+		});
+
+		var ioCard = card({
+			title: '配置导入导出',
+			icon: 'wrench',
+			body: [this.refs.ioHost]
+		});
+
+		[hwCard, svcCard, logCard, ioCard].forEach(function(c) {
+			panel.appendChild(c);
+		});
+
+		this.fetchLogs();
+	},
+
+	/* ------------------------------ 数据下发 ------------------------------ */
+
+	command: function(args, label, dangerHint) {
+		var self = this;
+
+		if (this.busy)
+			return Promise.resolve();
+
+		var chain = Promise.resolve();
+		if (dangerHint !== undefined && dangerHint !== null) {
+			chain = ui.confirm(_('危险操作确认'), [E('p', {}, dangerHint)], true);
+		} else if (args[0] !== 'auto' && this.status.mode === 'auto') {
+			chain = ui.confirm(_('退出智能温控'), [E('p', {},
+				_('切换到 %s 后，风扇将不再随温度自动调节。仅当温度超过临界值时温控守护会临时接管。')
+					.format(label))], true);
+		}
+
+		/* 返回整条链: 调用方(和离线测试)需要能等待命令真正落地 */
+		return chain.then(function(proceed) {
+			if (proceed === false)
+				return;
+			self.setBusy(true);
+			return ctl(args).then(function(res) {
+				var kv = parseKV(res.stdout);
+				if (res.rc !== 0 || kv.result === 'fail')
+					throw new Error(kv.error || (res.stderr || '').trim() || _('设备返回失败'));
+				self.sliderTouched = false;
+				ui.addNotification(null, E('p', {}, _('%s 已下发。').format(label)), 'info');
+			}).catch(function(e) {
+				ui.addNotification(null, E('p', {},
+					_('%s 失败: %s').format(label, e && e.message ? e.message : e)), 'error');
+			}).then(function() {
+				self.setBusy(false);
+				return self.fetch();
+			});
+		}).catch(function() { /* 用户取消确认框 */ });
+	},
+
+	setBusy: function(busy) {
+		this.busy = busy;
+		Object.keys(this.refs.levelBtns || {}).forEach(function(k) {
+			var btn = this.refs.levelBtns[k];
+			if (btn)
+				btn.disabled = !!busy;
+		}, this);
+		if (this.refs.sliderApply)
+			this.refs.sliderApply.disabled = !!busy;
+	},
+
+	/* ------------------------------ 绘制更新 ------------------------------ */
+
+	paint: function() {
+		/* 只看容器是否存在: 首屏渲染时节点尚未挂进文档，也必须完成绘制 */
+		if (!this.root)
+			return;
+
+		var st = this.status,
+			duty = num(st.duty, 0),
+			actual = num(st.duty_sysfs, -1),
+			pct = dutyPct(duty),
+			running = duty > 0,
+			alarm = st.alarm || 'none',
+			mode = st.mode || 'auto',
+			temp = flt(st.temp, NaN),
+			age = num(st.age, -1),
+			daemonAlive = st.daemon === '1',
+			warn = flt(uciget('temp_mid'), 60),
+			hot = flt(uciget('temp_high'), 85),
+			tone = toneForCelsius(isNaN(temp) ? null : temp, warn, hot),
+			self = this;
+
+		/* 风扇动画 */
+		if (this.refs.rotor) {
+			this.refs.rotor.style.setProperty('--ap-rotor',
+				Math.max(0.28, (1 - duty / 255) * 1.25 + 0.28).toFixed(2) + 's');
+			/* 只在概览页播放动画，切到其他标签页即暂停 */
+			this.refs.rotor.classList.toggle('is-running', running && this.tab === 'overview');
+		}
+
+		if (this.refs.dutyBig)
+			this.refs.dutyBig.textContent = running ? pct + '%' : '0%';
+		if (this.refs.dutyCap)
+			this.refs.dutyCap.textContent = running
+				? _('设定占空比 %d/255').format(duty)
+				: _('风扇停转');
+
+		if (this.refs.fanMeta)
+			dom.content(this.refs.fanMeta, pill(
+				mode === 'auto' ? _('智能温控') : (mode === 'stepless' ? _('无级调速') : _('手动档位')),
+				mode === 'auto' ? 'info' : 'warning'));
+
+		if (this.refs.headerStatus) {
+			var tone2 = !daemonAlive ? 'danger' : (alarm === 'none' ? 'good' : alarm);
+			dom.content(this.refs.headerStatus, [pill([
+				E('span', { 'class': 'ap-dot' + (daemonAlive ? ' ap-dot-live' : '') }),
+				daemonAlive ? _('守护进程运行中') : _('温控服务未运行'),
+				' · ', agoText(age)
+			], tone2)]);
+		}
+
+		this.paintAlerts(st, daemonAlive, alarm);
+		this.paintRunRows(st, duty, actual, age, daemonAlive);
+		this.paintTemps(st, tone, warn, hot);
+		this.paintPolicy(st);
+		this.paintTrend();
+		this.paintControl(st, duty, mode);
+		this.paintSensorTable(st, warn, hot);
+		this.paintAdvanced(st, daemonAlive);
+
+		/* 曲线预览只在可见时重绘: 橙色"当前点"跟随实测数据 */
+		if (this.tab === 'curve')
+			this.paintCurve();
+
+		/* 标签页上的告警角标 */
+		TABS.forEach(function(t) {
+			var btn = self.refs.tabButtons ? self.refs.tabButtons[t.id] : null;
+			if (!btn)
+				return;
+			var badge = btn.querySelector('.ap-tab-badge');
+			var want = (alarm !== 'none' && (t.id === 'overview' || t.id === 'control'));
+			if (want && !badge) {
+				btn.appendChild(E('span', { 'class': 'ap-tab-badge' }, '!'));
+			} else if (!want && badge) {
+				btn.removeChild(badge);
+			}
 		});
 	},
 
-	setAuto: function() {
-		var self = this;
-		this.hideStepless();
-		return ctl(['auto']).then(function() {
-			self.applyStatus({ mode: _('智能') });
-		}).catch(function(e) {
-			ui.addNotification(null, E('p', {}, _('自适应巡航切换失败: ') + e.message), 'error');
-		});
-	},
+	paintAlerts: function(st, daemonAlive, alarm) {
+		var host = this.refs.alarmHost;
+		if (!host)
+			return;
 
-	toggleStepless: function() {
-		var box = this.refs.sliderBox;
-		if (box.classList.contains('active')) {
-			this.hideStepless();
+		var items = [];
+		if (!daemonAlive)
+			items.push(['danger', _('温控服务未在运行，风扇当前不受自动调节保护。'),
+				_('智能温控依赖常驻守护进程，请检查服务状态。')]);
+		if (alarm === 'sensor')
+			items.push([st.misses >= 1 ? 'warning' : 'danger', _('温度采样异常'), st.alarm_msg || '']);
+		if (alarm === 'thermal')
+			items.push(['danger', _('温控守护已接管'), st.alarm_msg || '']);
+		if (alarm === 'interface')
+			items.push(['danger', _('风扇接口异常'), st.alarm_msg || '']);
+		if (st.guarded === '1')
+			items.push(['danger', _('临界温度守护生效中'), _('手动/无级设定已被临时覆盖为满速。')]);
+		String(st.config_errors || '').split('|').forEach(function(err) {
+			if (err.trim())
+				items.push(['warning', _('配置项异常'), err.trim()]);
+		});
+
+		if (!items.length) {
+			dom.content(host, E('div', { 'class': 'ap-alert is-info' }, [
+				svgIcon('chip', 18),
+				E('div', { 'class': 'ap-alert-body' }, [_('自检通过：温度采集、控制接口与服务运行均正常。')])
+			]));
 			return;
 		}
-		box.classList.add('active');
-		this.highlightButton(_('无极'));
-		var v = parseInt(this.refs.sliderCtrl.value, 10) || 255;
-		ctl(['stepless', String(v)]).catch(function() {});
-	},
 
-	hideStepless: function() {
-		if (this.refs.sliderBox)
-			this.refs.sliderBox.classList.remove('active');
-	},
-
-	highlightButton: function(label) {
-		var btns = this.refs.modesGrid.querySelectorAll('.gf-btn-mode');
-		btns.forEach(function(b) {
-			b.classList.toggle('active', label !== null && b.dataset.mode === label);
-		});
-	},
-
-	/* ---------- 状态应用 ---------- */
-
-	applyStatus: function(st) {
-		var spd = parseInt(st.fanspd, 10);
-		if (isNaN(spd)) spd = 0;
-
-		var label = null;
-		if (st.mode === '智能' || st.mode === _('智能')) {
-			label = _('智能');
-			this.refs.statusText.textContent = _('AI 智能动态调谐');
-			this.hideStepless();
-		} else if (st.mode === '无极' || st.mode === _('无极')) {
-			label = _('无极');
-			this.refs.statusText.textContent = _('线性自定义调度');
-			this.refs.sliderBox.classList.add('active');
-			this.refs.sliderCtrl.value = String(spd);
-			this.refs.sliderBadge.textContent = 'PWM ' + spd + ' (' + Math.round((spd / 255) * 100) + '%)';
-		} else {
-			var map = { 64: _('静音'), 128: _('巡航'), 192: _('强冷'), 255: _('全速') };
-			label = map[spd] || null;
-			this.refs.statusText.textContent = _('固定风道: ') + (label || 'PWM ' + spd);
-			this.hideStepless();
-		}
-
-		this.highlightButton(label);
-		this.updateTelemetry(spd);
-	},
-
-	applyTemp: function(tp) {
-		var t = tp.temp;
-		if (t && t !== 'null' && t !== '') {
-			this.currentTemp = parseFloat(t);
-			this.refs.thermalBadge.textContent =
-				(tp.source && tp.source !== _('智能')) ? _('热源: ') + tp.source : _('动态热源感知');
-		} else {
-			this.refs.thermalBadge.textContent = _('传感器自检中…');
-		}
-	},
-
-	applyTemps: function(temps) {
-		var labels = { cpu: 'CPU 核心', wifi: 'Wi-Fi 射频', phy: '网络交换', modem: _('5G/基带') };
-		var grid = this.refs.sensorsGrid;
-		var maxTemp = -1, maxKey = '';
-
-		Object.keys(labels).forEach(function(k) {
-			if (temps[k] !== undefined) {
-				var tv = parseInt(temps[k], 10);
-				if (!isNaN(tv) && tv > maxTemp) { maxTemp = tv; maxKey = k; }
-			}
-		});
-
-		dom.content(grid, '');
-		Object.keys(labels).forEach(function(k) {
-			if (temps[k] === undefined) return;
-			var tv = parseInt(temps[k], 10);
-			if (isNaN(tv)) return;
-
-			var color = tv > 75 ? '#ef4444' : (tv > 55 ? '#f59e0b' : '#10b981');
-			var pct = Math.min(Math.max((tv / 100) * 100, 6), 100);
-
-			var card = E('div', { 'class': 'gf-sensor-card' + (k === maxKey ? ' hotspot' : '') }, [
-				E('div', { 'class': 'gf-sc-top' }, [
-					E('span', {}, labels[k]),
-					k === maxKey ? E('span', { 'class': 'gf-sc-tag' }, 'PEAK') : ''
-				]),
-				E('div', { 'class': 'gf-sc-val', 'style': 'color:' + color }, [
-					String(tv),
-					E('span', { 'class': 'gf-sc-unit' }, '°C')
-				]),
-				E('div', { 'class': 'gf-sc-bar' }, [
-					E('div', {
-						'class': 'gf-sc-fill',
-						'style': 'width:' + pct + '%; background:' + color
-					})
+		dom.content(host, items.map(function(item) {
+			return E('div', { 'class': 'ap-alert is-' + item[0] }, [
+				svgIcon('alarm', 18),
+				E('div', { 'class': 'ap-alert-body' }, [
+					E('strong', {}, item[1]),
+					E('div', {}, item[2] || ''),
+					item[3] ? E('div', { 'class': 'ap-note', 'style': 'margin:6px 0 0' }, item[3]) : ''
 				])
 			]);
-			grid.appendChild(card);
+		}));
+	},
+
+	paintRunRows: function(st, duty, actual, age, daemonAlive) {
+		var host = this.refs.runRows;
+		if (!host)
+			return;
+
+		var agree = actual < 0 ? ['—', 'muted'] : (actual === duty ? [_('一致'), 'good'] : [_('不一致'), 'danger']);
+		dom.content(host, rows([
+			[_('执行者'), daemonAlive ? _('airpi-fanctl 守护进程') : _('无（仅静态接口值）'), daemonAlive ? 'good' : 'danger'],
+			[_('设定占空比'), '%d / 255 (%d%%)'.format(duty, dutyPct(duty)), 'info'],
+			[_('接口实测回读'), actual < 0 ? _('不可读') : '%d / 255 (%d%%)'.format(actual, dutyPct(actual)), agree[1]],
+			[_('驱动'), (st.driver || '—') + (st.driver_state ? ' · ' + st.driver_state : ''), 'muted'],
+			[_('控制接口'), st.pwm_path || '—', 'muted'],
+			[_('控制周期'), (st.interval || '—') + ' s', 'muted'],
+			[_('最近采样'), agoText(age), age >= 0 && age <= (num(st.interval, 8) * 3) ? 'good' : 'warning'],
+			[_('快照来源'), st.snapshot === 'daemon' ? _('守护进程状态文件') : _('CLI 即时采集'), 'muted']
+		]));
+	},
+
+	paintTemps: function(st, tone, warn, hot) {
+		var host = this.refs.tempChips;
+		if (!host)
+			return;
+
+		var chips = [];
+		['cpu', 'phy', 'wifi', 'modem'].forEach(function(key) {
+			var c = mcToC(st[key + '_mc']);
+			if (c == null && st[key + '_age'] === '-1' && !st[key + '_err'])
+				return;
+			chips.push(statChip(
+				_(SOURCE_LABEL[key]),
+				c == null ? '—' : c.toFixed(1) + ' ℃',
+				c == null ? 'idle' : toneForCelsius(c, warn, hot)));
+		});
+		if (!chips.length)
+			chips.push(statChip(_('温度'), _('无有效读数'), 'danger'));
+
+		dom.content(host, chips);
+		if (this.refs.tempMeta)
+			this.refs.tempMeta.textContent = st.temp_source
+				? _('热源: %s').format(_(SOURCE_LABEL[st.temp_source] || st.temp_source))
+				: _('暂无热源');
+	},
+
+	paintPolicy: function(st) {
+		var host = this.refs.policyHost;
+		if (!host)
+			return;
+
+		var band = num(st.band, 0),
+			duties = (st.policy || '').split(/\s+/).map(function(p) {
+				return p.split(':')[1];
+			});
+
+		dom.content(host, [
+			rows([
+				[_('生效曲线'), st.policy || '—', 'muted'],
+				[_('当前档位'), '%d / 3'.format(band), band >= 3 ? 'danger' : (band > 0 ? 'warning' : 'good')],
+				[_('降档迟滞'), (st.hysteresis || '—') + ' ℃', 'muted'],
+				[_('最小保持'), (st.min_hold || '—') + ' s', 'muted'],
+				[_('临界守护'), st.crit_guard === '1' ? _('开启 (%s ℃)').format(st.temp_crit || uciget('temp_crit') || '95') : _('关闭'),
+					st.crit_guard === '1' ? 'good' : 'danger'],
+				[_('失效兜底'), 'PWM %s × %s 次'.format(st.fail_duty || '—', st.fail_count || '—'), 'muted'],
+				[_('连续失效'), String(st.misses || '0'), num(st.misses, 0) > 0 ? 'warning' : 'good']
+			]),
+			E('div', { 'style': 'margin-top:12px' }, [
+				E('div', { 'class': 'ap-chip-label', 'style': 'margin-bottom:6px' }, _('占空比档位: ' + duties.join(' → ')))
+			])
+		]);
+	},
+
+	paintTrend: function() {
+		if (!this.refs.trendHost)
+			return;
+		dom.content(this.refs.trendHost, [trendChart(this.history)]);
+	},
+
+	paintCurve: function() {
+		if (!this.refs.curveChart)
+			return;
+		var cfg = this.curveConfig(),
+			invalid = !(cfg.temp_low < cfg.temp_mid && cfg.temp_mid < cfg.temp_high);
+
+		dom.content(this.refs.curveChart, [
+			curveChart(cfg),
+			invalid
+				? E('div', { 'class': 'ap-alert is-danger' }, [
+					svgIcon('alarm', 18),
+					E('div', { 'class': 'ap-alert-body' }, _('温度阈值必须严格递增，否则后端会拒绝该曲线并回退到出厂阶梯。'))
+				])
+				: '',
+			E('div', { 'class': 'ap-legend' }, [
+				E('span', {}, _('低温 %d ℃ → PWM %d').format(cfg.temp_low, cfg.duties[1])),
+				E('span', {}, _('中温 %d ℃ → PWM %d').format(cfg.temp_mid, cfg.duties[2])),
+				E('span', {}, _('高温 %d ℃ → PWM %d').format(cfg.temp_high, cfg.duties[3])),
+				E('span', {}, _('红色虚线为临界守护温度 %d ℃').format(cfg.temp_crit))
+			])
+		]);
+	},
+
+	paintControl: function(st, duty, mode) {
+		var codes = { auto: 'auto' };
+		[
+			[64, 0], [128, 1], [192, 2], [255, 3]
+		].forEach(function(p) {
+			codes[p[1]] = p[1];
+		});
+
+		Object.keys(this.refs.levelBtns || {}).forEach(function(key) {
+			var btn = this.refs.levelBtns[key];
+			if (!btn)
+				return;
+			var active = false;
+			if (key === 'auto')
+				active = mode === 'auto';
+			else if (mode === 'manual')
+				active = num(st.fanval, -1) === num(key, -1);
+			btn.classList.toggle('is-active', active);
+			btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+		}, this);
+
+		if (this.refs.slider && mode === 'stepless' && !this.sliderTouched)
+			this.refs.slider.value = String(duty);
+		if (this.refs.sliderText) {
+			var v = num(this.refs.slider ? this.refs.slider.value : duty, 0);
+			this.refs.sliderText.textContent = 'PWM %d · %d%%'.format(v, dutyPct(v));
+		}
+
+		if (this.refs.controlState) {
+			var actual = num(st.duty_sysfs, -1);
+			dom.content(this.refs.controlState, [
+				E('p', { 'class': 'ap-note' }, _('设定值是你要的目标，实测回读是接口当前的真实档位；两者不一致说明有第三方在写同一接口或写入失败。')),
+				rows([
+					[_('模式'), _(MODE_LABEL[mode] || mode), 'info'],
+					[_('fanvall 记录'), String(st.fanval || '—'), 'muted'],
+					[_('fanspeed.conf 镜像'), String(st.fanspd || '—'), 'muted'],
+					[_('设定占空比'), 'PWM %d (%d%%)'.format(duty, dutyPct(duty)), 'info'],
+					[_('实测回读'), actual < 0 ? _('不可读') : 'PWM %d (%d%%)'.format(actual, dutyPct(actual)),
+						actual === duty ? 'good' : (actual < 0 ? 'muted' : 'danger')]
+				])
+			]);
+		}
+	},
+
+	paintSensorTable: function(st, warn, hot) {
+		var body = this.refs.sensorBody;
+		if (!body)
+			return;
+
+		var paths = {
+			cpu: '/sys/class/thermal/thermal_zone*/temp',
+			phy: '/sys/class/hwmon/*/temp1_input',
+			wifi: 'iwpriv <iface> stat',
+			modem: 'ubus call modem_ctrl info'
+		};
+		var trs = ['cpu', 'phy', 'wifi', 'modem'].map(function(key) {
+			var c = mcToC(st[key + '_mc']),
+				age = num(st[key + '_age'], -1),
+				err = st[key + '_err'] || '',
+				state = c == null ? (err || _('无有效读数'))
+				: (age < 0 ? _('未知时效') : _('正常'));
+			return E('tr', {}, [
+				E('td', {}, [
+					E('strong', {}, _(SOURCE_LABEL[key])),
+					E('div', {}, E('code', {}, paths[key]))
+				]),
+				E('td', { 'class': 'num' }, c == null ? '—' : c.toFixed(1) + ' ℃'),
+				E('td', {}, c == null ? pill(state, 'muted') : pill(agoText(age), age > num(st.slow_interval, 30) * 2 ? 'warning' : 'good')),
+				E('td', {}, [
+					c == null ? pill(err ? _('不可用') : _('无数据'), 'danger') : pill(_('有效'), 'good'),
+					err ? E('div', { 'style': 'font-size:11.5px;color:var(--ap-text-dim);margin-top:4px' }, err) : ''
+				])
+			]);
+		});
+		dom.content(body, trs);
+
+		if (this.refs.samplingState) {
+			dom.content(this.refs.samplingState, rows([
+				[_('主控温度'), st.temp_source ? _(SOURCE_LABEL[st.temp_source]) : _('无'), 'info'],
+				[_('快采周期'), (st.interval || '—') + ' s', 'muted'],
+				[_('外部命令周期'), (st.slow_interval || '—') + ' s', 'muted'],
+				[_('热源判定'), _('取所有有效来源的最大值'), 'muted'],
+				[_('无转速反馈'), _('该硬件不提供 tach 输入'), 'muted']
+			]));
+		}
+	},
+
+	paintAdvanced: function(st, daemonAlive) {
+		if (!this.refs.serviceState)
+			return;
+
+		/* 只更新数据行: 按钮在面板就绪时创建并绑定一次，避免每轮重建 */
+		dom.content(this.refs.serviceState, rows([
+			[_('守护进程'), daemonAlive ? _('运行中') : _('未运行'), daemonAlive ? 'good' : 'danger'],
+			[_('状态文件'), '/tmp/airpi-fan.state', 'muted'],
+			[_('日志级别'), (st.log_level || '—') + ' / 3', 'muted'],
+			[_('停止后保底占空比'), 'PWM ' + (st.stop_duty || '—'), st.stop_duty === '0' ? 'danger' : 'muted'],
+			[_('配置文件'), '/etc/config/airpi-fan', 'muted']
+		]));
+
+		if (this.refs.ioHost && !this.ioBuilt) {
+			this.ioBuilt = true;
+			this.buildIO();
+		}
+	},
+
+	/* ------------------------------ 硬件与日志 ------------------------------ */
+
+	fetchHardware: function() {
+		var self = this;
+		this.hwPending = true;
+		return ctl(['hwdetect']).then(function(res) {
+			self.hw = parseKV(res.stdout);
+			self.hwPending = false;
+			self.paintHardware();
+		}).catch(function(e) {
+			self.hwPending = false;
+			if (self.refs.hwHost)
+				dom.content(self.refs.hwHost, E('div', { 'class': 'ap-alert is-danger' },
+					_('硬件探测失败: ') + (e && e.message ? e.message : e)));
 		});
 	},
 
-	/* ---------- 物理遥测演算 & 渲染更新 ---------- */
+	paintHardware: function() {
+		if (!this.hw || !this.refs.hwHost)
+			return;
 
-	updateTelemetry: function(speed) {
-		this.currentSpeed = speed;
-		var pct = Math.round((speed / 255) * 100);
-		this.refs.heroPct.textContent = pct + '%';
+		var hw = this.hw,
+			hwPwmOk = hw.hw_pwm && hw.hw_pwm !== 'none',
+			swLoaded = hw.softpwm_loaded === '1',
+			is16g = num(hw.emmc_sectors, 0) > 25000000;
 
-		// 校准真实的转速区间 (0 ~ 2800 RPM，适合静音风扇)
-		var rpm = speed === 0 ? 0 : Math.round(550 + (speed / 255) * 2250);
-		var dba = speed === 0 ? 0 : (12.0 + (speed / 255) * 16.5).toFixed(1);
-		var cfm = (speed === 0 ? 0 : (0.3 + (speed / 255) * 1.5)).toFixed(1);
+		var svg = E('svg', {
+			'viewBox': '0 0 560 150', 'class': 'ap-topo', 'preserveAspectRatio': 'xMidYMid meet',
+			'role': 'img', 'aria-label': _('硬件拓扑')
+		});
+		svg.innerHTML = '' +
+			'<rect class="ap-topo-box' + (is16g ? '' : ' is-live') + '" x="8" y="42" rx="12" width="120" height="62"/>' +
+			'<text class="ap-topo-t" x="68" y="66" text-anchor="middle">eMMC ' + (hw.emmc_gb || '?') + 'GB</text>' +
+			'<text class="ap-topo-s" x="68" y="82" text-anchor="middle">' + (is16g ? '16GB 增强版' : '8GB 标准版') + '</text>' +
+			'<text class="ap-topo-s" x="68" y="96" text-anchor="middle">' + (is16g ? '软件 PWM 通道' : '硬件 PWM 通道') + '</text>' +
+			'<path class="ap-topo-wire' + (hwPwmOk ? ' is-live is-pulse' : '') + '" d="M128 60 L196 40"/>' +
+			'<path class="ap-topo-wire' + (swLoaded ? ' is-live is-pulse' : '') + '" d="M128 86 L196 106"/>' +
+			'<rect class="ap-topo-box ' + (hwPwmOk ? 'is-live' : 'is-dead') + '" x="196" y="16" rx="11" width="150" height="46"/>' +
+			'<text class="ap-topo-t" x="271" y="36" text-anchor="middle">内核硬件 PWM</text>' +
+			'<text class="ap-topo-s" x="271" y="52" text-anchor="middle">' + (hwPwmOk ? hw.hw_pwm : '未挂载') + '</text>' +
+			'<rect class="ap-topo-box ' + (swLoaded ? 'is-live' : 'is-dead') + '" x="196" y="84" rx="11" width="150" height="46"/>' +
+			'<text class="ap-topo-t" x="271" y="104" text-anchor="middle">airpi_gpio_fan</text>' +
+			'<text class="ap-topo-s" x="271" y="120" text-anchor="middle">' + (swLoaded ? '已加载 · duty ' + (hw.duty || 'na') : '未加载') + '</text>' +
+			'<path class="ap-topo-wire is-live is-pulse" d="M346 39 C 396 39 396 74 436 74"/>' +
+			'<path class="ap-topo-wire is-live is-pulse" d="M346 107 C 396 107 396 74 436 74"/>' +
+			'<rect class="ap-topo-box is-live" x="436" y="52" rx="11" width="116" height="44"/>' +
+			'<text class="ap-topo-t" x="494" y="72" text-anchor="middle">' + (hw.driver || '—') + '</text>' +
+			'<text class="ap-topo-s" x="494" y="87" text-anchor="middle">当前 PWM ' + (hw.duty || 'na') + '/255</text>';
 
-		var desc = _('已停机待命');
-		if (speed > 220) desc = _('全速除热 · 满载强冷');
-		else if (speed > 160) desc = _('增压散热 · 快速降温');
-		else if (speed > 90) desc = _('恒温巡航 · 均衡风道');
-		else if (speed > 0) desc = _('静音微风 · 超低功耗');
+		dom.content(this.refs.hwHost, [
+			svg,
+			E('div', { 'class': 'ap-chips', 'style': 'margin-top:12px' }, [
+				statChip(_('eMMC'), (hw.emmc_gb || '?') + ' GB', is16g ? 'info' : 'good'),
+				statChip(_('硬件 PWM'), hwPwmOk ? _('可用') : _('无节点'), hwPwmOk ? 'good' : 'idle'),
+				statChip(_('软件 PWM'), swLoaded ? _('已加载') : _('未加载'), swLoaded ? 'good' : 'idle'),
+				statChip(_('当前占空比'), String(hw.duty || '—'), 'info'),
+				statChip(_('pwmchip'), String(hw.pwmchip || '—'), 'muted'),
+				statChip(_('停止保底'), 'PWM ' + (hw.stop_duty || '—'), hw.stop_duty === '0' ? 'danger' : 'good')
+			]),
+			E('p', { 'class': 'ap-note', 'style': 'margin-top:12px' },
+				_('占空比数值直接来自 /sys/kernel/duty_cycle 与 pwm-fan 接口，未做任何换算或推算。'))
+		]);
 
-		this.refs.heroDesc.textContent = desc;
-		this.refs.chipRpm.textContent = rpm.toLocaleString() + ' RPM';
-		this.refs.chipDba.textContent = speed === 0 ? '< 10 dBA' : '~' + dba + ' dBA';
-		this.refs.chipFlow.textContent = cfm + ' CFM';
+		if (this.refs.hwMeta)
+			dom.content(this.refs.hwMeta, pill(_('驱动: %s').format(hw.driver || '—'),
+				hw.driver === 'pwm' ? 'info' : 'good'));
+	},
 
-		// 动态进度弧 (周长约为 603.2)
-		if (this.refs.arc) {
-			var offset = 603.2 - ((speed / 255) * 603.2);
-			this.refs.arc.style.strokeDashoffset = String(offset);
-		}
+	fetchLogs: function() {
+		var self = this;
+		if (this.logsPending || !this.refs.logHost)
+			return Promise.resolve();
 
-		// v11: 陶瓷扇叶转速 + 气流涟漪联动（真实占空比驱动，停机冻结）
-		var running = speed > 0;
-		var ratio = speed / 255;
+		this.logsPending = true;
+		dom.content(this.refs.logHost, E('p', { 'class': 'ap-note' }, _('正在读取日志…')));
 
-		var rotor = this.refs.rotor;
-		if (rotor) {
-			rotor.style.animationDuration = running ?
-				Math.max(0.24, (1 - ratio) * 1.16 + 0.24).toFixed(2) + 's' : '0.75s';
-			rotor.style.animationPlayState = running ? 'running' : 'paused';
-		}
+		return ctl(['logs', '200']).then(function(res) {
+			self.logsPending = false;
+			var kv = parseKV(res.stdout);
+			var text = String(res.stdout || '').replace(/^logfile=.*$/gm, '').trim();
+			dom.content(self.refs.logHost, [
+				E('pre', { 'class': 'ap-log' }, text || _('（暂无日志，可把日志级别调到"信息"或"调试"）')),
+				E('div', { 'class': 'ap-legend' }, [
+					E('span', {}, _('来源: ' + (kv.logfile || '/tmp/airpi-fancontrol.log'))),
+					E('span', {}, _('时间为 UTC，设备未配置时区数据库'))
+				])
+			]);
+		}).catch(function(e) {
+			self.logsPending = false;
+			dom.content(self.refs.logHost, E('div', { 'class': 'ap-alert is-danger' },
+				_('读取日志失败: ') + (e && e.message ? e.message : e)));
+		});
+	},
 
-		if (this.refs.ripples && this.refs.ripples.length) {
-			var speedFactor = 1.4 - 0.8 * ratio;   // 占空比越高，涟漪脉动越快
-			for (var ri = 0; ri < this.refs.ripples.length; ri++) {
-				var ripple = this.refs.ripples[ri];
-				ripple.style.animationDuration = (2.2 * speedFactor).toFixed(2) + 's';
-				ripple.style.animationPlayState = running ? 'running' : 'paused';
+	reloadConfig: function() {
+		var self = this;
+		uci.save().then(function() {
+			dirty.flag = false;
+			return ctl(['reload']);
+		}).then(function(res) {
+			var kv = parseKV(res.stdout);
+			ui.addNotification(null, E('p', {},
+				kv.reloaded === 'daemon'
+					? _('配置已保存，守护进程将在下一个控制周期应用（无需重启，风扇不会中断）。')
+					: _('配置已保存并拉起温控服务。')), 'info');
+			return self.fetch();
+		}).catch(function(e) {
+			ui.addNotification(null, E('p', {}, _('重载失败: ') + (e && e.message ? e.message : e)), 'error');
+		});
+	},
+
+	/* --------------------------- 导入 / 导出 / 重置 --------------------------- */
+
+	buildIO: function() {
+		var self = this;
+
+		this.refs.exportArea = E('textarea', { 'class': 'ap-area', 'readonly': 'readonly', 'rows': '8' });
+		this.refs.importArea = E('textarea', {
+			'class': 'ap-area', 'rows': '8',
+			'placeholder': _('粘贴 option 形式或 key=value 形式的配置，导入后需保存并应用。')
+		});
+
+		var exportBtn = E('button', { 'class': 'ap-btn', 'type': 'button' }, _('导出当前配置'));
+		exportBtn.addEventListener('click', function() {
+			self.refs.exportArea.value = self.exportConfig();
+			self.refs.exportArea.select();
+		});
+		var importBtn = E('button', { 'class': 'ap-btn is-primary', 'type': 'button' }, _('导入并暂存'));
+		importBtn.addEventListener('click', function() {
+			self.importConfig(self.refs.importArea.value);
+		});
+		var resetBtn = E('button', { 'class': 'ap-btn is-danger', 'type': 'button' }, _('恢复出厂设置值'));
+		resetBtn.addEventListener('click', function() {
+			self.restoreDefaults();
+		});
+
+		dom.content(this.refs.ioHost, [
+			E('p', { 'class': 'ap-note' }, _('导出内容取自 uci 暂存值；导入只接受本项目已知且范围合法的配置项，其余行会被拒绝并列出。')),
+			E('div', { 'class': 'ap-card-title', 'style': 'margin:8px 0 6px' }, _('导出')),
+			this.refs.exportArea,
+			E('div', { 'class': 'ap-card-title', 'style': 'margin:12px 0 6px' }, _('导入')),
+			this.refs.importArea,
+			E('div', { 'class': 'ap-actions' }, [exportBtn, importBtn, resetBtn])
+		]);
+	},
+
+	exportConfig: function() {
+		var lines = ['config fan \'' + SECTION + '\''];
+		Object.keys(DEFAULTS).forEach(function(key) {
+			var value = uci.get(CONFIG, SECTION, key);
+			if (value == null || value === '')
+				value = this.status[key] != null ? String(this.status[key]) : DEFAULTS[key];
+			lines.push('\toption ' + key + ' \'' + String(value).replace(/'/g, '') + '\'');
+		}, this);
+		return lines.join('\n') + '\n';
+	},
+
+	importConfig: function(text) {
+		var problems = [],
+			accepted = {};
+
+		String(text || '').split('\n').forEach(function(line) {
+			var trimmed = line.trim();
+			if (!trimmed || trimmed.charAt(0) === '#' || /^config\s/.test(trimmed))
+				return;
+
+			var key = null,
+				value = null,
+				opt = trimmed.match(/^option\s+([a-z0-9_]+)\s+'?(.*?)'?$/i),
+				kv = trimmed.match(/^([a-z0-9_]+)=(.*)$/i);
+
+			if (opt) {
+				key = opt[1];
+				value = opt[2];
+			} else if (kv) {
+				key = kv[1];
+				value = kv[2];
+			} else {
+				problems.push(_('无法解析: ') + trimmed);
+				return;
 			}
+
+			if (!Object.prototype.hasOwnProperty.call(DEFAULTS, key)) {
+				problems.push(_('未知配置项: ') + key);
+				return;
+			}
+			var err = validateOption(key, value);
+			if (err) {
+				problems.push(key + ': ' + err);
+				return;
+			}
+			accepted[key] = value;
+		});
+
+		if (!Object.keys(accepted).length) {
+			ui.addNotification(null, E('p', {},
+				_('没有可导入的配置项。') + (problems.length ? '\n' + problems.join('\n') : '')), 'error');
+			return;
 		}
+
+		Object.keys(accepted).forEach(function(key) {
+			uci.set(CONFIG, SECTION, key, accepted[key]);
+		});
+
+		uci.save().then(L.bind(function() {
+			dirty.flag = false;
+			ui.addNotification(null, E('p', {},
+				_('已写入 %d 项配置，页面将重新加载以反映新值。').format(Object.keys(accepted).length)
+				+ (problems.length ? _('（已跳过 %d 项无效内容）').format(problems.length) : '')), 'info');
+			location.reload();
+		}, this)).catch(function(e) {
+			ui.addNotification(null, E('p', {}, _('保存失败: ') + (e && e.message ? e.message : e)), 'error');
+		});
+	},
+
+	restoreDefaults: function() {
+		var self = this;
+		ui.confirm(_('恢复出厂设置值'), [E('p', {}, _(
+			'将删除所有自定义项（驱动选择、温控曲线、安全兜底等），回到出厂默认。保存后守护进程在下一个控制周期应用，风扇不会中断。'))],
+			true).then(function(proceed) {
+			if (!proceed)
+				return;
+
+			Object.keys(DEFAULTS).forEach(function(key) {
+				uci.delete(CONFIG, SECTION, key);
+			});
+
+			return uci.save().then(function() {
+				dirty.flag = false;
+				return ctl(['reload']);
+			}).then(function() {
+				ui.addNotification(null, E('p', {}, _('已恢复出厂设置值并保存。')), 'info');
+				location.hash = '#advanced';
+				location.reload();
+			});
+		}).catch(function(e) {
+			ui.addNotification(null, E('p', {}, _('恢复默认失败: ') + (e && e.message ? e.message : e)), 'error');
+		});
 	}
 });
+
+/* ------------------------------ 通用小工具 ------------------------------ */
+
+function uciget(key) {
+	try {
+		var v = uci.get(CONFIG, SECTION, key);
+		return v == null ? null : String(v);
+	} catch (e) {
+		return null;
+	}
+}
+
+/*
+ * 注意: 模块体在下面的 `return view.extend(...)` 处结束执行，因此这里只允许
+ * 出现函数声明(整体提升)，不能有依赖赋值顺序的 var 初始化。
+ */
+function validateOption(key, value) {
+	var ranges = {
+		temp_high: [20, 120, 'float'], temp_mid: [20, 120, 'float'], temp_low: [20, 120, 'float'],
+		temp_crit: [20, 120, 'float'], hysteresis: [0, 15, 'float'],
+		duty_high: [0, 255, 'int'], duty_mid: [0, 255, 'int'], duty_low: [0, 255, 'int'],
+		duty_idle: [0, 255, 'int'], fail_duty: [0, 255, 'int'], stop_duty: [0, 255, 'int'],
+		auto_interval: [2, 300, 'int'], slow_interval: [5, 600, 'int'], min_hold: [0, 600, 'int'],
+		fail_count: [1, 10, 'int'], fan_gpio: [0, 1023, 'int'], fan_freq: [100, 1000000, 'int'],
+		log_level: [0, 3, 'int']
+	};
+	var range = ranges[key];
+
+	if (range) {
+		var n = parseFloat(value);
+		if (isNaN(n) || n < range[0] || n > range[1])
+			return _('%s 需在 %s 到 %s 之间').format(key, range[0], range[1]);
+		if (range[2] === 'int' && String(value).indexOf('.') >= 0)
+			return _('%s 必须是整数').format(key);
+		return null;
+	}
+	if (key === 'crit_guard' || /^src_/.test(key)) {
+		if (['0', '1', 'yes', 'no', 'on', 'off', 'true', 'false'].indexOf(String(value).toLowerCase()) < 0)
+			return _('%s 需为 0 或 1').format(key);
+		return null;
+	}
+	if (key === 'fan_driver') {
+		if (['auto', 'pwm', 'softpwm'].indexOf(value) < 0)
+			return _('fan_driver 只能是 auto/pwm/softpwm');
+		return null;
+	}
+	return null;
+}
