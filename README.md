@@ -151,11 +151,20 @@ graph TD
 ### 2. 四路温度探测机制
 
 | 温区来源 | 底层采集通道 | 过滤校验机制 |
-| --- | --- | --- |
-| **CPU 核心** | 遍历 `/sys/class/thermal/thermal_zone*/temp` | 仅采纳 $1 \sim 150^\circ\text{C}$ 之间有效读数，自动丢弃越界值 |
-| **Wi-Fi 射频** | 首个匹配网卡（`ra0` / `rax0` / `rai0`）执行 `iwpriv <dev> stat` 提取 `CurrentTemperature` | 针对无线驱动异常回退机制 |
-| **网络 PHY** | 遍历 `/sys/class/hwmon/hwmon*/temp1_input`（排除风扇类设备） | 取物理网卡传感器最大值 |
+| --- | --- | :--- |
+| **CPU 核心** | `/sys/class/thermal/thermal_zone*/temp`，外加名称含 `cpu`/`thermal`/`soc` 的 hwmon 芯片 | 原始值一律显示；仅落在 $1 \sim 150^\circ\text{C}$ 区间的读数参与仲裁 |
+| **Wi-Fi 射频** | 优先 `mt79xx`/`mt76xx` hwmon 的 `temp1_input`（无 fork）；无该节点时回退 `iwpriv <dev> stat` 的 `CurrentTemperature` | 同上；回退路径按 `slow_interval` 低频采样 |
+| **网络 PHY** | 其余非风扇、非射频 hwmon 芯片的 `temp1_input`（如 `mdio_bus:*`） | 跨芯片取最高，避免首个命中低估热点 |
 | **5G 模组** | `ubus call modem_ctrl info` 提取 `temperature` 字段 | 数值 $< 1000$ 视为摄氏度换算，否则按毫摄氏度换算 |
+
+界面与状态文件对每个来源同时给出 `<src>_mc`（原始值）、`<src>_valid`（是否参与仲裁）、
+`<src>_age`（采样时效）与 `<src>_err`（不可用或越界原因），因此**坏读数会被如实显示出来而不是被悄悄丢弃**，
+但绝不会参与调速；控制温度始终是"所有有效来源的最大值"。
+接口完全缺失与读到 $0^\circ\text{C}$ 也是两件事，前者显示为 `—` 而不是低温。
+
+> [!IMPORTANT]
+> 本机（16GB 单元）的 CPU 温度传感器实际上报负值（约 $-12^\circ\text{C}$），属于该内核的已知异常：
+> 它仍会显示在概览与传感器页并标注"读数异常，不参与仲裁"，调速基准由 60 ℃+ 的射频温度承担。
 
 > [!NOTE]
 > AP3000M 未引出风扇 Hall 测速（tach）引脚，**风扇物理转速无法回读**。界面因此不提供 RPM / dBA / CFM 这类换算值，

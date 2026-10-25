@@ -98,9 +98,30 @@
   两段代码只在 Linux 目标上参与编译，Windows 宿主机上的 `cargo test`/`clippy` 都覆盖不到，
   是 CI 交叉编译暴露的。本地已加入 `cargo check --target aarch64-unknown-linux-musl` 作为常规步骤
 
+### 实机反馈修正（第二轮）
+
+- **温度来源按芯片归类**：hwmon 芯片名 `mt79xx`/`mt76xx` 归入 Wi-Fi 射频，`cpu_thermal` 归入 CPU，
+  `mdio_bus:*` 等留在网络 PHY，`pwmfan`/`pwm-fan` 不再被当作温度来源。此前 Wi-Fi 只查 `iwpriv`
+  （本机不存在，恒不可用），而真正可用的 `mt7915_phy*` 温度被混在 `phy` 桶里
+- **原始读数一律显示**：新增 `<src>_valid` 字段，概览卡片与传感器表都显示原始值并标注
+  "读数异常，不参与仲裁"；CPU 与 Wi-Fi 射频无论是否异常都必须列出。仲裁仍只取有效来源最大值，
+  控制语义不变。接口缺失（`—`）与读到 0 ℃ 明确区分
+- **Wi-Fi 归为快采源**：板载 mt79xx hwmon 可用时不再每轮 fork `iwpriv`，仅回退路径走低频缓存
+- **修复视图遮挡主题导航**：主题 `header` 为 `position:sticky; z-index:40`（移动端遮罩 60、
+  菜单展开时 70），本视图卡片上的 `backdrop-filter` 会创建合成层与层叠上下文，
+  在这类组合下把 OpenWrt 自带导航压在下面。现移除两处 `backdrop-filter`，
+  并给 `.ap-root` 显式设定 `position:relative; z-index:0; isolation:isolate`
+  把整页钉在主题导航之下；半透明底色保留，同时省掉模糊的 GPU 开销
+
+- 概览页布局统一：`当前生效策略` 原被塞进 300px 左列，与右列四张卡片宽度和边线都不齐。
+  现提升为版心直接子元素占满整行，内部改为"左列参数 + 右列四档调速"两栏（窄屏自动堆叠）；
+  同时把面板改为统一 `gap` 栅格并移除逐卡 `margin-bottom`，消除卡片间距的双重叠加
+- 修正策略档位高亮的下标映射：后端 `policy` 自高温到低温排列（`85:255 60:192 50:128 *:64`），
+  下标 0..3 对应档位 3..0，此前按同序高亮会把 60 ℃ 档错标成 50 ℃ 档
+
 ### 验证状态
 
-- 后端:`cargo test` 22 项单元测试通过(曲线默认值、范围校验、阈值顺序、迟滞降档、
+- 后端:`cargo test` 25 项单元测试通过(曲线默认值、范围校验、阈值顺序、迟滞降档、
   最小保持、失效安全升级、守护接管与交还、无级档位保持与恢复、用户显式降档即时生效、
   PWM 周期 256 μs 下限、legacy 档位码映射、uci show 解析、模组温度解析);
   `cargo clippy --all-targets` 无告警;`cargo check --target aarch64-unknown-linux-musl` 通过
@@ -127,7 +148,9 @@
   | 失效安全 | 停用全部来源后 `misses=4` → duty=255、`alarm=sensor`；旧版此处会落到最低档 |
   | RPC 成本 | 30 次刷新：新版 `snapshot` 合计 0.08s，旧版 `status+temp+temps+hwdetect` 合计 0.75s（约 9.4×） |
   | CLI 兼容 | `legacy-temp -c/-s/-a`、`get_sys_temp.sh -c`、`hwdetect`、`status` 输出逐项比对，除 `mode=` 改为机器码外保持一致 |
-  | 前端下发 | `GET /luci-static/resources/view/airpi-fancontrol/fancontrol.js` → 200、80206 字节，与本地源文件逐字节一致，含五个标签页文案 |
+  | 前端下发 | `GET /luci-static/resources/view/airpi-fancontrol/fancontrol.js` → 200、与本地源文件逐字节一致，含五个标签页文案 |
+  | 来源归类（第二轮） | `temps` 现输出 `phy=42 wifi=66`；`legacy-temp -c`=66、`-s`="66000 wifi"、`get_sys_temp.sh -c`=66，控制基准与修改前一致，散热无回退 |
+  | 越界值显示（第二轮） | 快照 `cpu_mc=-12408`、`cpu_valid=0`、`cpu_err=原始读数 -12.4℃ 越界，不参与仲裁`；`wifi_valid=1`、`temp_source=wifi`；`duty_cycle` 全程 192 未变 |
 
 - **尚未验证**：浏览器内的交互验证（登录后的页面渲染、TAB 切换与保存动作，需要人工登录会话）；
   CI 产出的 `.apk` 安装/升级/卸载路径（本次验证为文件替换）；整机重启后的开机自启（涉及路由网络中断，未执行）。
