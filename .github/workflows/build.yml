@@ -23,8 +23,11 @@ env:
   PKG_ARCH: aarch64_cortex-a53
 
 jobs:
-  # 三个矩阵目标共享同一套流程。耗时大头原本是 SDK 下载解压与 feeds 的 git clone，
-  # 现按目标分别缓存；编译去掉 V=s 回到默认静默，避免输出 GB 级日志拖慢 IO。
+  # 三个矩阵目标共享同一套流程。耗时大头是 package/kernel/linux 的内核全量编译
+  # （kmod-airpi-gpio-fan 必须对着目标内核构建），单次约 95 分钟。
+  # 因此除 SDK / feeds 缓存外，再按「目标 + SDK 指纹 + 内核版本」缓存
+  # build_dir/target-* 与 staging_dir/target-*：命中时内核与依赖包直接复用，
+  # 整体从约 100 分钟降到数分钟；未命中时退化为全量编译，行为不变。
   # 另外生成编译配置时显式关闭 ALL_KMODS / ALL_NONSHARED / ALL（SDK 默认 y），
   # 否则 package/kernel/linux 会全量编译数千个无关内核模块（约 2 小时），
   # 且 lucihttp lua 变体、ucode-mod-ffi(+libffi) 等无关组件会被拖进闭包。
@@ -32,6 +35,7 @@ jobs:
   build:
     name: 📦 编译 ${{ matrix.tag }} (${{ matrix.version }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +124,18 @@ jobs:
           path: sdk
           key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile', '.github/workflows/build.yml') }}
 
+      - name: 解析内核版本
+        id: kver
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          # 构建缓存键里带上内核版本：同一 SDK 指纹下内核变版本时自动失效，
+          # 避免复用为旧内核编译出来的 build_dir / staging_dir。
+          KVER=$(basename "$(ls -d build_dir/target-*/linux-*/linux-* 2>/dev/null | head -1)" 2>/dev/null || true)
+          [ -n "$KVER" ] || KVER=unknown
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+          echo "内核版本: $KVER"
+
       - name: 恢复 feeds 缓存
         id: cache-feeds
         uses: actions/cache/restore@v4
@@ -174,6 +190,43 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/pkgsrc/airpi-gpio-fan" package/airpi-gpio-fan
           ls -l package/ | grep airpi
 
+      # libffi 3.4.7 在某些树上把 fficonfig.h 生成到 $(PKG_BUILD_DIR)/<triplet>/，
+      # 而 ImmortalWrt master 的 base feed 仍在 Build/InstallDev 里硬编码
+      #   $(CP) $(PKG_BUILD_DIR)/$(GNU_TARGET_NAME)*/fficonfig.h $(1)/usr/include/
+      # glob 一旦未命中就 cp: cannot stat 失败（v7.0.1/v7.0.2 的失败根因）。
+      # tools/patch-libffi.py 与上游 openwrt/openwrt 的修法对齐：删掉硬编码
+      # glob，改为从 PKG_INSTALL_DIR / PKG_BUILD_DIR 兜底复制，找不到就静默跳过。
+      # 脚本幂等，对没有该问题的树（24.10 / 25.12）无副作用。
+      - name: 修补 SDK 的 libffi staging 缺陷
+        run: python3 "$GITHUB_WORKSPACE/pkgsrc/tools/patch-libffi.py" "$GITHUB_WORKSPACE/sdk"
+
+      # 内核全量编译是单个作业最大的固定开销（约 95 分钟）。缓存 build_dir 与
+      # staging_dir 的 target 部分后，SDK 指纹 + 内核版本 + 包源码均不变时直接复用，
+      # 只有本仓库的两个包会重新编译。未命中时退化为全量编译，不影响正确性。
+      - name: 恢复构建缓存
+        id: cache-build
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            sdk/build_dir/target-*
+            sdk/staging_dir/target-*
+          key: build-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.kver.outputs.kver }}-${{ steps.bucket.outputs.week }}
+          restore-keys: |
+            build-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.kver.outputs.kver }}-
+
+      # 缓存恢复会把目录 mtime 写成解压时刻，比缓存里的 stamp 更新，make 会误判
+      # 为源码变更而重编内核。这里只把恢复出来的目录（不含文件）时间戳回拨，
+      # 让 stamp 与源码的时间关系保持原样。本仓库的包在 pkgsrc 下，不受影响。
+      - name: 对齐缓存时间戳
+        if: steps.cache-build.outputs.cache-hit == 'true'
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          STAMP=$(date -u -d '2 days ago' '+%Y-%m-%d %H:%M:%S')
+          find feeds package build_dir/target-* staging_dir/target-* -type d -print0 2>/dev/null \
+            | xargs -0 -r touch -c -h -d "$STAMP" || true
+          echo "已回拨构建目录时间戳至 $STAMP"
+
       - name: 生成编译配置
         working-directory: sdk
         run: |
@@ -208,9 +261,11 @@ jobs:
           # CONFIG_PACKAGE_luci-lib-base is not set
           # CONFIG_PACKAGE_ucode-mod-ffi is not set
           EOF
-          make defconfig
+          make defconfig </dev/null
           echo "----- 生效的相关配置 -----"
           grep -E 'airpi' .config || { echo "::error::软件包未出现在 .config 中，请检查 Makefile 依赖"; exit 1; }
+          echo "----- libffi / ffi 相关配置（诊断用） -----"
+          grep -E 'ffi' .config || echo "（无 ffi 相关条目）"
           # 退役 lua 校验:若下列组件仍被 kconfig 选中,说明依赖树里还有隐藏的
           # lua 依赖边,直接失败暴露,而不是在编译期报 lua.h 之类的间接错误。
           if grep -E '^CONFIG_PACKAGE_(lua|liblua|luci-lua-runtime|luci-compat|liblucihttp-lua|luci-lib-base)=' .config; then
@@ -222,6 +277,8 @@ jobs:
       # 把真实错误（依赖缺失/编译报错）打到日志,避免只看到 "exit code 2"。
       # 注意:include/verbose.mk 以 "V 值是否含 s" 判断详细输出,
       # 因此 V=sc 仍会触发详细输出,不能作为静默开关。
+      # 所有 make 都重定向 stdin:SDK 的 .config 若出现新符号会拉起交互式
+      # menuconfig,在 CI 里表现为一直挂到超时,重定向后直接失败报错。
 
       - name: 编译 luci-app-airpi-fancontrol
         working-directory: sdk
@@ -229,21 +286,35 @@ jobs:
           set -euo pipefail
           if ! make package/luci-app-airpi-fancontrol/compile -j$(nproc) \
                 AIRPI_PREBUILT=1 \
-                AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"; then
+                AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl" \
+                </dev/null; then
             echo "::error::首次编译失败,以 V=s 重跑以获取诊断信息"
             make package/luci-app-airpi-fancontrol/compile V=s -j1 \
               AIRPI_PREBUILT=1 \
-              AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl"
+              AIRPI_PREBUILT_BIN="$GITHUB_WORKSPACE/pkgsrc/luci-app-airpi-fancontrol/src/target/aarch64-unknown-linux-musl/release/airpi-fanctl" \
+              </dev/null
           fi
 
       - name: 编译 kmod-airpi-gpio-fan
         working-directory: sdk
         run: |
           set -euo pipefail
-          if ! make package/airpi-gpio-fan/compile -j$(nproc); then
+          if ! make package/airpi-gpio-fan/compile -j$(nproc) </dev/null; then
             echo "::error::kmod 首次编译失败,以 V=s 重跑以获取诊断信息"
-            make package/airpi-gpio-fan/compile V=s -j1
+            make package/airpi-gpio-fan/compile V=s -j1 </dev/null
           fi
+
+      # 内核与依赖包的编译产物是本次运行最贵的产出,缓存下来给后续运行复用。
+      # 保存失败（例如同 key 已存在）不应让作业变红,故 continue-on-error。
+      - name: 保存构建缓存
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            sdk/build_dir/target-*
+            sdk/staging_dir/target-*
+          key: build-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.kver.outputs.kver }}-${{ steps.bucket.outputs.week }}
 
       - name: 收集安装包
         working-directory: sdk

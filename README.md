@@ -369,6 +369,18 @@ git push origin v7.0.1
 
 CI 将针对 **OpenWrt 24.10.x**、**OpenWrt 25.12.x** 以及 **ImmortalWrt master 快照** 同时发起矩阵构建。
 
+流水线按三级缓存复用，命中时无需再跑内核全量编译（原本单个作业约 95 分钟）：
+
+| 缓存 | 内容 | 失效条件 |
+| --- | --- | --- |
+| `sdk-*` | 解压后的 SDK | SDK 下载地址变化 |
+| `feeds-*` | feeds 源码 | 自然周变化 |
+| `build-*` | `build_dir/target-*`、`staging_dir/target-*`（含内核编译产物） | SDK 指纹或内核版本变化 |
+
+构建前会执行 `tools/patch-libffi.py`，修补部分 SDK 树（如 ImmortalWrt master）里 libffi 3.4.7
+`fficonfig.h` 的 staging 缺陷——该缺陷会让依赖闭包中的 libffi 在 `cannot stat` 处中断整个作业。
+脚本幂等，对本就没有该问题的树不做任何改动。
+
 ### 本地开发校验
 
 ```sh
@@ -433,7 +445,8 @@ make package/airpi-gpio-fan/compile V=s
 │       ├── usr/bin/get_sys_temp.sh    # 旧温度脚本兼容包装
 │       └── usr/share/{luci/menu.d,rpcd/acl.d}/  # 菜单注册与最小权限 ACL
 ├── tools/
-│   └── airpi-probe.sh                 # 实机只读探测脚本（13 段，不改任何设备状态）
+│   ├── airpi-probe.sh                 # 实机只读探测脚本（13 段，不改任何设备状态）
+│   └── patch-libffi.py                # CI 用：修补 SDK libffi 的 fficonfig.h staging 缺陷
 ├── docs/                              # 界面预览资源
 ├── CHANGELOG.md                       # 版本迭代历史
 └── LICENSE                            # GPL-2.0 开源授权

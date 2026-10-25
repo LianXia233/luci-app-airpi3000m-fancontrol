@@ -2,6 +2,41 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 修复
+
+- **ImmortalWrt master 作业失败（v7.0.2 的实际根因）**：`package/libs/libffi` 的
+  `Build/InstallDev` 里硬编码了
+
+  ```make
+  $(CP) $(PKG_BUILD_DIR)/$(GNU_TARGET_NAME)*/fficonfig.h $(1)/usr/include/
+  ```
+
+  libffi 3.4.7 的 `fficonfig.h` 落地位置随构建树而异，glob 一旦未命中就是
+  `cp: cannot stat ...: No such file or directory`，libffi 在 *staging* 阶段失败并
+  中断整个作业（日志里表现为「编译 luci-app-airpi-fancontrol」失败，真正的报错在
+  `package/feeds/base/libffi`）。关闭 `ALL_KMODS` / `ucode-mod-ffi` 并不能排除它——
+  libffi 仍被其它依赖边拉进闭包。
+  新增 `tools/patch-libffi.py`，在编译前修补 SDK：与上游 openwrt/openwrt 的修法对齐，
+  删掉硬编码 glob，改为从 `PKG_INSTALL_DIR` / `PKG_BUILD_DIR` 兜底复制，两处都没有就
+  静默跳过。脚本幂等，对没有该问题的树（24.10 / 25.12、已同步上游修法的快照）不做改动
+- **make 调用可能挂死**：SDK 的 `.config` 若出现新符号，OpenWrt 会拉起交互式
+  `menuconfig`，在 CI 里表现为一直挂到作业超时。现在所有 make 都重定向 stdin，
+  遇到这种情况直接失败并暴露错误，而不是静默空转
+
+### 变更
+
+- **构建缓存（编译提速）**：新增 `build-*` 缓存，保存 `build_dir/target-*` 与
+  `staging_dir/target-*`（含内核编译产物）。键为「目标 + SDK 指纹 + 内核版本 + 自然周」，
+  命中时直接复用内核与依赖包，只重新编译本仓库的两个包；未命中时退化为全量编译，
+  行为与缓存前一致
+- **缓存时间戳对齐**：缓存恢复会把目录 mtime 写成解压时刻，比缓存里的 stamp 更新，
+  make 会误判成源码变更而重编内核。恢复后只把目录（不动文件）时间戳回拨两天，
+  保持 stamp 与源码的原有先后关系
+- 作业增加 `timeout-minutes: 180`，避免异常挂起长期占用 runner
+- 生成编译配置后打印 `ffi` 相关条目，便于下次定位同类闭包问题
+
 ## [7.0.2] - 2026-10-26
 
 ### 变更
