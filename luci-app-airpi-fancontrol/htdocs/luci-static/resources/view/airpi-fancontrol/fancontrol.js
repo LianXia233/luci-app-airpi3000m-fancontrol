@@ -155,6 +155,26 @@ function svgIcon(name, size) {
 	return host;
 }
 
+/*
+ * SVG 必须以 `<svg …>` 标签本身进入 HTML 解析器的 foreign-content 分支才会被
+ * 当作 SVG 渲染；document.createElement('svg') 建的是 HTML 命名空间的未知元素，
+ * 往它里面 innerHTML 塞 <path>/<polyline> 只会得到不渲染的 HTML 未知元素。
+ * 因此统一用外层 div + 完整 `<svg>` 字符串。inner 只允许包含本模块生成的
+ * 标记与已转义的值。
+ */
+function svgFragment(inner, attrs) {
+	var host = E('div', { 'class': 'ap-svg' });
+	host.innerHTML = '<svg ' + (attrs || 'viewBox="0 0 292 104"') +
+		' xmlns="http://www.w3.org/2000/svg">' + inner + '</svg>';
+	return host;
+}
+
+function esc(value) {
+	return String(value == null ? '' : value)
+		.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;');
+}
+
 function card(opts) {
 	var head = null;
 	if (opts.title) {
@@ -243,11 +263,7 @@ function curveChart(cfg) {
 		d += ' L ' + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1);
 		d += ' L ' + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1);
 	});
-	var svg = E('svg', {
-		'viewBox': '0 0 292 104', 'class': 'ap-chart', 'preserveAspectRatio': 'none',
-		'role': 'img', 'aria-label': _('温控曲线预览')
-	});
-	svg.innerHTML = '<g class="ap-chart-grid">' +
+	var svg = '<g class="ap-chart-grid">' +
 		'<line x1="12" y1="16" x2="280" y2="16"/><line x1="12" y1="54" x2="280" y2="54"/>' +
 		'<line x1="12" y1="92" x2="280" y2="92"/>' +
 		'<text x="12" y="12">100%</text><text x="12" y="50">50%</text>' +
@@ -263,7 +279,9 @@ function curveChart(cfg) {
 		'</g>' +
 		'<circle class="ap-chart-now" cx="' + x(cfg.now).toFixed(1) + '" cy="' +
 		y(cfg.nowDuty).toFixed(1) + '" r="3.5"/>';
-	return svg;
+
+	return svgFragment(svg, 'viewBox="0 0 292 104" class="ap-chart" preserveAspectRatio="none" ' +
+		'role="img" aria-label="' + esc(_('温控曲线预览')) + '"');
 }
 
 /* 温度与占空比历史趋势，数据全部来自实际轮询 */
@@ -287,18 +305,16 @@ function trendChart(history) {
 			tempPts.push(px(i).toFixed(1) + ',' + pyTemp(s.temp).toFixed(1));
 		dutyPts.push(px(i).toFixed(1) + ',' + pyDuty(s.duty).toFixed(1));
 	});
-	var svg = E('svg', {
-		'viewBox': '0 0 292 104', 'class': 'ap-chart', 'preserveAspectRatio': 'none',
-		'role': 'img', 'aria-label': _('温度与占空比趋势')
-	});
-	svg.innerHTML = '<g class="ap-chart-grid">' +
+	var svg = '<g class="ap-chart-grid">' +
 		'<line x1="6" y1="16" x2="286" y2="16"/><line x1="6" y1="54" x2="286" y2="54"/>' +
 		'<line x1="6" y1="92" x2="286" y2="92"/>' +
 		'<text x="6" y="12">110℃</text><text x="6" y="50">65℃</text><text x="6" y="88">20℃</text>' +
 		'</g>' +
 		'<polyline class="ap-chart-duty" points="' + dutyPts.join(' ') + '"/>' +
 		'<polyline class="ap-chart-temp" points="' + tempPts.join(' ') + '"/>';
-	return svg;
+
+	return svgFragment(svg, 'viewBox="0 0 292 104" class="ap-chart" preserveAspectRatio="none" ' +
+		'role="img" aria-label="' + esc(_('温度与占空比趋势')) + '"');
 }
 
 /* ------------------------------- 样式表 ------------------------------- */
@@ -479,6 +495,7 @@ var CSS = String('') +
 	'.ap-table tr:last-child td{border-bottom:none;}\n' +
 	'.ap-table td.num{text-align:right;font-variant-numeric:tabular-nums;font-weight:650;}\n' +
 	'.ap-table code{font-size:11px;color:var(--ap-text-dim);overflow-wrap:anywhere;}\n' +
+	'.ap-svg{display:block;line-height:0;}\n' +
 	'.ap-chart{width:100%;height:auto;display:block;color:var(--ap-accent);}\n' +
 	'.ap-chart-empty{font-size:12px;color:var(--ap-text-dim);padding:24px 0;text-align:center;}\n' +
 	'.ap-chart-grid line{stroke:var(--ap-border);stroke-width:1;}\n' +
@@ -1722,33 +1739,31 @@ return view.extend({
 			swLoaded = hw.softpwm_loaded === '1',
 			is16g = num(hw.emmc_sectors, 0) > 25000000;
 
-		var svg = E('svg', {
-			'viewBox': '0 0 560 150', 'class': 'ap-topo', 'preserveAspectRatio': 'xMidYMid meet',
-			'role': 'img', 'aria-label': _('硬件拓扑')
-		});
-		svg.innerHTML = '' +
+		var topo = svgFragment('' +
 			'<rect class="ap-topo-box' + (is16g ? '' : ' is-live') + '" x="8" y="42" rx="12" width="120" height="62"/>' +
-			'<text class="ap-topo-t" x="68" y="66" text-anchor="middle">eMMC ' + (hw.emmc_gb || '?') + 'GB</text>' +
+			'<text class="ap-topo-t" x="68" y="66" text-anchor="middle">eMMC ' + esc(hw.emmc_gb || '?') + 'GB</text>' +
 			'<text class="ap-topo-s" x="68" y="82" text-anchor="middle">' + (is16g ? '16GB 增强版' : '8GB 标准版') + '</text>' +
 			'<text class="ap-topo-s" x="68" y="96" text-anchor="middle">' + (is16g ? '软件 PWM 通道' : '硬件 PWM 通道') + '</text>' +
 			'<path class="ap-topo-wire' + (hwPwmOk ? ' is-live is-pulse' : '') + '" d="M128 60 L196 40"/>' +
 			'<path class="ap-topo-wire' + (swLoaded ? ' is-live is-pulse' : '') + '" d="M128 86 L196 106"/>' +
 			'<rect class="ap-topo-box ' + (hwPwmOk ? 'is-live' : 'is-dead') + '" x="196" y="16" rx="11" width="150" height="46"/>' +
 			'<text class="ap-topo-t" x="271" y="36" text-anchor="middle">内核硬件 PWM</text>' +
-			'<text class="ap-topo-s" x="271" y="52" text-anchor="middle">' + (hwPwmOk ? hw.hw_pwm : '未挂载') + '</text>' +
+			'<text class="ap-topo-s" x="271" y="52" text-anchor="middle">' + (hwPwmOk ? esc(hw.hw_pwm) : '未挂载') + '</text>' +
 			'<rect class="ap-topo-box ' + (swLoaded ? 'is-live' : 'is-dead') + '" x="196" y="84" rx="11" width="150" height="46"/>' +
 			'<text class="ap-topo-t" x="271" y="104" text-anchor="middle">airpi_gpio_fan</text>' +
-			'<text class="ap-topo-s" x="271" y="120" text-anchor="middle">' + (swLoaded ? '已加载 · duty ' + (hw.duty || 'na') : '未加载') + '</text>' +
+			'<text class="ap-topo-s" x="271" y="120" text-anchor="middle">' + (swLoaded ? '已加载 · duty ' + esc(hw.duty || 'na') : '未加载') + '</text>' +
 			'<path class="ap-topo-wire is-live is-pulse" d="M346 39 C 396 39 396 74 436 74"/>' +
 			'<path class="ap-topo-wire is-live is-pulse" d="M346 107 C 396 107 396 74 436 74"/>' +
 			'<rect class="ap-topo-box is-live" x="436" y="52" rx="11" width="116" height="44"/>' +
-			'<text class="ap-topo-t" x="494" y="72" text-anchor="middle">' + (hw.driver || '—') + '</text>' +
-			'<text class="ap-topo-s" x="494" y="87" text-anchor="middle">当前 PWM ' + (hw.duty || 'na') + '/255</text>';
+			'<text class="ap-topo-t" x="494" y="72" text-anchor="middle">' + esc(hw.driver || '—') + '</text>' +
+			'<text class="ap-topo-s" x="494" y="87" text-anchor="middle">当前 PWM ' + esc(hw.duty || 'na') + '/255</text>',
+			'viewBox="0 0 560 150" class="ap-topo" preserveAspectRatio="xMidYMid meet" ' +
+			'role="img" aria-label="' + esc(_('硬件拓扑')) + '"');
 
 		var pwmfanOk = hw.pwmfan_path && hw.pwmfan_path !== 'none';
 
 		dom.content(this.refs.hwHost, [
-			svg,
+			topo,
 			E('div', { 'class': 'ap-chips', 'style': 'margin-top:12px' }, [
 				statChip(_('eMMC'), (hw.emmc_gb || '?') + ' GB', is16g ? 'info' : 'good'),
 				statChip(_('硬件 PWM'), hwPwmOk ? _('可用') : _('无节点'), hwPwmOk ? 'good' : 'idle'),
