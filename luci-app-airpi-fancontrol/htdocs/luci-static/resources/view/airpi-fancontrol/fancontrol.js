@@ -1683,6 +1683,8 @@ return view.extend({
 			'<text class="ap-topo-t" x="494" y="72" text-anchor="middle">' + (hw.driver || '—') + '</text>' +
 			'<text class="ap-topo-s" x="494" y="87" text-anchor="middle">当前 PWM ' + (hw.duty || 'na') + '/255</text>';
 
+		var pwmfanOk = hw.pwmfan_path && hw.pwmfan_path !== 'none';
+
 		dom.content(this.refs.hwHost, [
 			svg,
 			E('div', { 'class': 'ap-chips', 'style': 'margin-top:12px' }, [
@@ -1690,11 +1692,23 @@ return view.extend({
 				statChip(_('硬件 PWM'), hwPwmOk ? _('可用') : _('无节点'), hwPwmOk ? 'good' : 'idle'),
 				statChip(_('软件 PWM'), swLoaded ? _('已加载') : _('未加载'), swLoaded ? 'good' : 'idle'),
 				statChip(_('当前占空比'), String(hw.duty || '—'), 'info'),
-				statChip(_('pwmchip'), String(hw.pwmchip || '—'), 'muted'),
+				statChip(_('pwm-fan 节点'), pwmfanOk ? String(hw.pwmfan_value) : _('不存在'), 'muted'),
 				statChip(_('停止保底'), 'PWM ' + (hw.stop_duty || '—'), hw.stop_duty === '0' ? 'danger' : 'good')
 			]),
+			/* 16GB 实机同时存在两个接口，只有 duty_cycle 真正驱动风扇 */
+			(pwmfanOk && swLoaded)
+				? E('div', { 'class': 'ap-alert is-warning' }, [
+					svgIcon('alarm', 18),
+					E('div', { 'class': 'ap-alert-body' }, [
+						E('strong', {}, _('本机存在两个风扇接口，但只有一个真正驱动风扇')),
+						E('div', {}, _('pwm-fan 节点 %s 当前读数 %s，而 /sys/kernel/duty_cycle 当前为 %s，说明风扇实际由 GPIO 软 PWM 驱动。若在此强行选择"硬件 PWM"，守护进程会卸载软 PWM 模块并改写前者，风扇可能彻底失去控制，而接口回读仍显示正常。')
+							.format(hw.pwmfan_path, hw.pwmfan_value || '?', hw.duty || '?'))
+					])
+				])
+				: '',
 			E('p', { 'class': 'ap-note', 'style': 'margin-top:12px' },
-				_('占空比数值直接来自 /sys/kernel/duty_cycle 与 pwm-fan 接口，未做任何换算或推算。'))
+				_('以上数值均直接读自 /sys/kernel/duty_cycle、pwm-fan 的 pwm1 与 /sys/class/pwm，'
+					+ '未做任何换算或推算。'))
 		]);
 
 		if (this.refs.hwMeta)
