@@ -82,11 +82,29 @@
   `/sys/kernel/duty_cycle`、`/sys/class/hwmon/*/pwm1` 全部路径语义
 - 升级设备的旧配置文件不含新选项,由守护进程按 `Config::default()` 补齐,默认行为与旧版逐位一致
 
+### 评审修正（PR #4 / Codex）
+
+- **软 PWM 周期下限对齐驱动契约**：新增的"热更新 `/sys/module/airpi_gpio_fan/parameters/period`"
+  绕过了模块加载期的 `period >= 256` 检查。驱动按 256 个最小 1 μs 的时间片调度，
+  写入 100 μs 会让定时器以约 1 MHz 触发并可能占满 CPU。配置校验下限由 100 收紧到 256，
+  前端 `datatype`/导入校验与默认配置注释同步
+- **用户显式降档不再被最小保持时间顶回**：`min_hold` 原对三种模式一律生效，
+  自动升档后立刻选低档时，守护进程会把旧档位重新写回接口长达 30 秒。
+  现只对自动曲线的降档平滑，手动/无级的目标立即生效
+- **临时接管不回写 `fanspeed.conf`**：临界守护与传感器失效兜底会覆盖该镜像文件，
+  而无级模式把它当作"用户目标值"读回 —— 条件消失后风扇停在接管档位而不是回到滑块设定。
+  现区分"用户请求"与"临时输出"，仅前者写镜像
+- **`#[cfg(unix)]` 日志分支编译失败**：`format` 缺少 `!`、`UnixDatagram::send` 传入 `String` 而非 `&[u8]`。
+  两段代码只在 Linux 目标上参与编译，Windows 宿主机上的 `cargo test`/`clippy` 都覆盖不到，
+  是 CI 交叉编译暴露的。本地已加入 `cargo check --target aarch64-unknown-linux-musl` 作为常规步骤
+
 ### 验证状态
 
-- 后端:`cargo test` 19 项单元测试通过(曲线默认值、范围校验、阈值顺序、迟滞降档、
-  最小保持、失效安全升级、守护接管与交还、无级档位保持、legacy 档位码映射、uci show 解析、模组温度解析);
-  `cargo clippy --all-targets` 无告警
+- 后端:`cargo test` 22 项单元测试通过(曲线默认值、范围校验、阈值顺序、迟滞降档、
+  最小保持、失效安全升级、守护接管与交还、无级档位保持与恢复、用户显式降档即时生效、
+  PWM 周期 256 μs 下限、legacy 档位码映射、uci show 解析、模组温度解析);
+  `cargo clippy --all-targets` 无告警;`cargo check --target aarch64-unknown-linux-musl` 通过
+  (覆盖 `#[cfg(unix)]` 的 `/dev/log` 分支,宿主机编译不到这段)
 - 前端:jsdom 离线冒烟 50 项断言通过(渲染链、标签页切换不触发硬件写入、轮询去重与自注销、
   控制命令互斥与反馈、导入导出校验、异常分支);其中 `String.prototype.format` 直接取自 LuCI 上游 `cbi.js`,
   插值行为与设备一致

@@ -641,8 +641,8 @@ function makeAdvancedMap(self) {
 	gpio.default = '540';
 	gpio.depends('fan_driver', 'softpwm');
 	var freq = d.option(form.Value, 'fan_freq', _('PWM 周期 (微秒)'),
-		_('默认 15000μs ≈ 66.7Hz。修改后由守护进程热更新内核模块参数。'));
-	freq.datatype = 'and(uinteger,min(100),max(1000000))';
+		_('默认 15000μs ≈ 66.7Hz。驱动把周期切成 256 个下限 1μs 的时间片，低于 256μs 会产生每秒上百万次定时器中断，因此不接受更小的值。修改后由守护进程热更新内核模块参数。'));
+	freq.datatype = 'and(uinteger,min(256),max(1000000))';
 	freq.default = '15000';
 	freq.depends('fan_driver', 'softpwm');
 
@@ -1897,7 +1897,7 @@ function validateOption(key, value) {
 		duty_high: [0, 255, 'int'], duty_mid: [0, 255, 'int'], duty_low: [0, 255, 'int'],
 		duty_idle: [0, 255, 'int'], fail_duty: [0, 255, 'int'], stop_duty: [0, 255, 'int'],
 		auto_interval: [2, 300, 'int'], slow_interval: [5, 600, 'int'], min_hold: [0, 600, 'int'],
-		fail_count: [1, 10, 'int'], fan_gpio: [0, 1023, 'int'], fan_freq: [100, 1000000, 'int'],
+		fail_count: [1, 10, 'int'], fan_gpio: [0, 1023, 'int'], fan_freq: [256, 1000000, 'int'],
 		log_level: [0, 3, 'int']
 	};
 	var range = ranges[key];
