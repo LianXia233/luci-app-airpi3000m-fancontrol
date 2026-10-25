@@ -722,17 +722,23 @@ function makeAdvancedMap(self) {
  * LuCI 站内 SPA 切换不会触发它，切换标签页本身也不会丢编辑内容。
  */
 var dirty = { flag: false };
-var unloadListenerBound = false;
+var globalHooksBound = false;
+var activeView = { view: null };
 
-function armUnloadGuard() {
-	if (unloadListenerBound)
+function armGlobalHooks() {
+	if (globalHooksBound)
 		return;
-	unloadListenerBound = true;
+	globalHooksBound = true;
 	window.addEventListener('beforeunload', function(ev) {
 		if (!dirty.flag)
 			return;
 		ev.preventDefault();
 		ev.returnValue = '';
+	});
+	/* 从后台标签切回来时立刻补一次刷新，而不是等下一个轮询周期 */
+	document.addEventListener('visibilitychange', function() {
+		if (!document.hidden && activeView.view)
+			activeView.view.fetch();
 	});
 }
 
@@ -775,17 +781,30 @@ return view.extend({
 		var seq = ++this.seq;
 
 		return ctl(['snapshot']).then(function(res) {
-			if (seq !== self.seq)
-				return;
-			self.applyStatus(parseKV(res.stdout));
-		}).catch(function(e) {
-			if (seq !== self.seq)
-				return;
-			self.applyStatus({ alarm: 'interface', alarm_msg: _('状态读取失败: ') + (e && e.message ? e.message : e) });
-		}).then(function() {
 			if (seq === self.seq)
-				self.inflight = false;
+				self.applyStatus(parseKV(res.stdout));
+		}, function(e) {
+			if (seq === self.seq) {
+				self.applyStatus({
+					alarm: 'interface',
+					alarm_msg: _('状态读取失败: ') + (e && e.message ? e.message : e)
+				});
+			}
+		}).then(null, function(e) {
+			/* applyStatus 内部抛错也不能让 inflight 卡死：一旦卡住，
+			   之后每次轮询都会静默跳过，页面永久停在"正在积累采样数据"
+			   且没有任何可见提示。 */
+			self.noteError(e);
+		}).then(function() {
+			self.inflight = false;
 		});
+	},
+
+	/** 把异常变成可见信息，而不是吞掉。 */
+	noteError: function(e) {
+		this.lastError = String(e && e.message ? e.message : e);
+		if (window.console && console.warn)
+			console.warn('airpi-fancontrol: ' + this.lastError, e && e.stack);
 	},
 
 	applyStatus: function(st) {
@@ -890,7 +909,8 @@ return view.extend({
 		this.root.appendChild(this.nav);
 
 		/* 单个委托监听器即可覆盖三个表单，容器随视图一起销毁 */
-		armUnloadGuard();
+		armGlobalHooks();
+		activeView.view = this;
 		this.root.addEventListener('change', function(ev) {
 			if (ev.target && ev.target.closest && ev.target.closest('.ap-form'))
 				dirty.flag = true;
@@ -952,24 +972,39 @@ return view.extend({
 	},
 
 	pollTick: function() {
-		/* 容器已被移除(站内导航): 注销自己，不再持有任何 DOM 引用 */
+		/* 容器已被移除(站内导航): 注销自己，不再持有任何 DOM 引用。
+		   要求连续 3 次判定缺失才动手：主题可能在视图 render() 返回后才把
+		   节点挂进文档，单次误判会让轮询被自己永久杀掉。 */
 		if (!this.root || !document.body.contains(this.root)) {
-			if (this.pollFn)
+			this.detachHits = (this.detachHits || 0) + 1;
+			if (this.detachHits >= 3 && this.pollFn) {
 				poll.remove(this.pollFn);
+				if (activeView.view === this)
+					activeView.view = null;
+			}
 			return Promise.resolve();
 		}
+
+		this.detachHits = 0;
 
 		/* 浏览器后台标签不做任何请求；回到前台下一轮自动恢复 */
 		if (document.hidden)
 			return Promise.resolve();
 
 		this.tick++;
-		var chain = [this.fetch()];
 
-		if (this.tab === 'advanced' && !this.hwPending && this.tick % 3 === 0)
-			chain.push(this.fetchHardware());
+		/* 同步异常会让 LuCI 的轮询回调中断，这里兜住并显示出来 */
+		try {
+			var chain = [this.fetch()];
 
-		return Promise.all(chain);
+			if (this.tab === 'advanced' && !this.hwPending && this.tick % 3 === 0)
+				chain.push(this.fetchHardware());
+
+			return Promise.all(chain);
+		} catch (e) {
+			this.noteError(e);
+			return Promise.resolve();
+		}
 	},
 
 	buildHeader: function() {
@@ -1404,7 +1439,7 @@ return view.extend({
 				E('span', { 'class': 'ap-dot' + (daemonAlive ? ' ap-dot-live' : '') }),
 				daemonAlive ? _('守护进程运行中') : _('温控服务未运行'),
 				' · ', agoText(age)
-			], tone2)]);
+			], tone2), ' ', pill(_('轮询 #%1$d · 采样 #%2$d').format(this.tick, this.history.length), 'muted')]);
 		}
 
 		this.paintAlerts(st, daemonAlive, alarm);
@@ -1441,6 +1476,9 @@ return view.extend({
 			return;
 
 		var items = [];
+		if (this.lastError)
+			items.push(['danger', _('页面刷新异常'), this.lastError,
+				_('该错误已显示而非被吞掉；若持续出现请把这段文字反馈给维护者。')]);
 		if (!daemonAlive)
 			items.push(['danger', _('温控服务未在运行，风扇当前不受自动调节保护。'),
 				_('智能温控依赖常驻守护进程，请检查服务状态。')]);
