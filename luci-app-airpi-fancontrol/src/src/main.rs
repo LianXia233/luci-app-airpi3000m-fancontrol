@@ -253,7 +253,9 @@ fn read_bounded(
     match raw.parse::<i64>() {
         Ok(value) if (min..=max).contains(&value) => value,
         Ok(value) => {
-            errors.push(format!("{key}={value} 需在 {min}..={max} 之间，已沿用 {current}"));
+            errors.push(format!(
+                "{key}={value} 需在 {min}..={max} 之间，已沿用 {current}"
+            ));
             current
         }
         Err(_) => {
@@ -288,7 +290,12 @@ fn read_celsius(
     }
 }
 
-fn read_duty(kv: &HashMap<String, String>, key: &str, current: u32, errors: &mut Vec<String>) -> u32 {
+fn read_duty(
+    kv: &HashMap<String, String>,
+    key: &str,
+    current: u32,
+    errors: &mut Vec<String>,
+) -> u32 {
     read_bounded(kv, key, current as i64, 0, 255, errors) as u32
 }
 
@@ -316,19 +323,41 @@ impl Config {
             }
         }
 
-        cfg.interval = read_bounded(kv, "auto_interval", cfg.interval as i64, 2, 300, &mut errors) as u64;
-        cfg.slow_interval =
-            read_bounded(kv, "slow_interval", cfg.slow_interval as i64, 5, 600, &mut errors) as u64;
-        cfg.min_hold = read_bounded(kv, "min_hold", cfg.min_hold as i64, 0, 600, &mut errors) as u64;
+        cfg.interval = read_bounded(
+            kv,
+            "auto_interval",
+            cfg.interval as i64,
+            2,
+            300,
+            &mut errors,
+        ) as u64;
+        cfg.slow_interval = read_bounded(
+            kv,
+            "slow_interval",
+            cfg.slow_interval as i64,
+            5,
+            600,
+            &mut errors,
+        ) as u64;
+        cfg.min_hold =
+            read_bounded(kv, "min_hold", cfg.min_hold as i64, 0, 600, &mut errors) as u64;
         cfg.fail_count =
             read_bounded(kv, "fail_count", cfg.fail_count as i64, 1, 10, &mut errors) as u64;
-        cfg.log_level = read_bounded(kv, "log_level", cfg.log_level as i64, 0, 3, &mut errors) as u8;
-        cfg.fan_gpio = read_bounded(kv, "fan_gpio", cfg.fan_gpio as i64, 0, 1023, &mut errors) as u32;
+        cfg.log_level =
+            read_bounded(kv, "log_level", cfg.log_level as i64, 0, 3, &mut errors) as u8;
+        cfg.fan_gpio =
+            read_bounded(kv, "fan_gpio", cfg.fan_gpio as i64, 0, 1023, &mut errors) as u32;
         // The driver splits `period` into 256 slices and floors each slice at
         // 1 µs, so a period below 256 µs means ~1M hrtimer wakeups per second.
         // Loading enforced that floor; a hot parameter write must not bypass it.
-        cfg.fan_freq = read_bounded(kv, "fan_freq", cfg.fan_freq as i64, 256, 1_000_000, &mut errors)
-            as u32;
+        cfg.fan_freq = read_bounded(
+            kv,
+            "fan_freq",
+            cfg.fan_freq as i64,
+            256,
+            1_000_000,
+            &mut errors,
+        ) as u32;
 
         cfg.temp_low = read_celsius(kv, "temp_low", cfg.temp_low, &mut errors);
         cfg.temp_mid = read_celsius(kv, "temp_mid", cfg.temp_mid, &mut errors);
@@ -494,7 +523,10 @@ fn module_param(name: &str) -> Option<String> {
 }
 
 fn set_module_param(name: &str, value: &str) -> Result<()> {
-    write_value(format!("/sys/module/{MODULE_NAME}/parameters/{name}"), value)
+    write_value(
+        format!("/sys/module/{MODULE_NAME}/parameters/{name}"),
+        value,
+    )
 }
 
 /// Bring the kernel side in line with the configuration.  A live soft-PWM
@@ -520,13 +552,20 @@ fn ensure_driver(cfg: &Config) -> Result<()> {
                 log(
                     LOG_INFO,
                     cfg.log_level,
-                    &format!("GPIO changed, reloading soft-PWM module on pin {}", cfg.fan_gpio),
+                    &format!(
+                        "GPIO changed, reloading soft-PWM module on pin {}",
+                        cfg.fan_gpio
+                    ),
                 );
                 run_status("rmmod", &[MODULE_NAME]);
             } else if module_param("period").as_deref() != Some(wanted.as_str()) {
                 return match set_module_param("period", &wanted) {
                     Ok(()) => {
-                        log(LOG_INFO, cfg.log_level, &format!("PWM period set to {wanted} us"));
+                        log(
+                            LOG_INFO,
+                            cfg.log_level,
+                            &format!("PWM period set to {wanted} us"),
+                        );
                         Ok(())
                     }
                     Err(error) => Err(format!("failed to set PWM period: {error}")),
@@ -552,7 +591,13 @@ fn load_softpwm(cfg: &Config) -> Result<()> {
     ];
     let loaded = run_status(
         "insmod",
-        &["airpi-gpio-fan", &params[0], &params[1], &params[2], &params[3]],
+        &[
+            "airpi-gpio-fan",
+            &params[0],
+            &params[1],
+            &params[2],
+            &params[3],
+        ],
     ) || run_status(
         "modprobe",
         &[MODULE_NAME, &params[0], &params[1], &params[2], &params[3]],
@@ -585,9 +630,14 @@ fn valid_mc(value: i64) -> bool {
     (1_000..=150_000).contains(&value)
 }
 
-/// Hottest thermal zone, milli-degrees.
+/// Hottest plausible reading among `values`, ignoring out-of-range noise such
+/// as the negative cpu-thermal samples some AP3000M kernels report.
+fn valid_max(values: impl IntoIterator<Item = i64>) -> Option<i64> {
+    values.into_iter().filter(|v| valid_mc(*v)).max()
+}
+
 fn read_cpu_mc() -> Option<i64> {
-    let mut best: Option<i64> = None;
+    let mut values = Vec::new();
     if let Ok(entries) = fs::read_dir("/sys/class/thermal") {
         for entry in entries.flatten() {
             let dir = entry.path();
@@ -599,15 +649,20 @@ fn read_cpu_mc() -> Option<i64> {
             {
                 continue;
             }
-            if let Some(v) = read_number(dir.join("temp")).filter(|v| valid_mc(*v)) {
-                best = Some(best.map_or(v, |b| b.max(v)));
+            if let Some(v) = read_number(dir.join("temp")) {
+                values.push(v);
             }
         }
     }
-    best
+    valid_max(values)
 }
 
+/// Hottest `temp1_input` across every non-fan hwmon chip.  On the AP3000M this
+/// bucket holds both the switch PHY (`mdio_bus:*`, ~40 °C) and the Wi-Fi radios
+/// (`mt7915_phy*`, 60 °C+); stopping at the first match would under-report the
+/// control temperature and let the fan lag behind the real hotspot.
 fn read_phy_mc() -> Option<i64> {
+    let mut values = Vec::new();
     if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
         for entry in entries.flatten() {
             let dir = entry.path();
@@ -615,12 +670,12 @@ fn read_phy_mc() -> Option<i64> {
             if matches!(name.as_str(), "pwmfan" | "pwm-fan" | "fan") {
                 continue;
             }
-            if let Some(v) = read_number(dir.join("temp1_input")).filter(|v| valid_mc(*v)) {
-                return Some(v);
+            if let Some(v) = read_number(dir.join("temp1_input")) {
+                values.push(v);
             }
         }
     }
-    None
+    valid_max(values)
 }
 
 fn read_wifi_mc() -> Option<i64> {
@@ -709,11 +764,15 @@ struct Sampler {
 
 impl Sampler {
     fn read(&mut self, index: usize, slow: bool, now: u64, slow_interval: u64) -> Sample {
-        let cached = self.cache.get(&index).map(|(mc, ts, err)| (*mc, *ts, err.clone()));
-        let fresh = slow && match cached {
-            Some((_, ts, _)) => now.saturating_sub(ts) < slow_interval,
-            None => false,
-        };
+        let cached = self
+            .cache
+            .get(&index)
+            .map(|(mc, ts, err)| (*mc, *ts, err.clone()));
+        let fresh = slow
+            && match cached {
+                Some((_, ts, _)) => now.saturating_sub(ts) < slow_interval,
+                None => false,
+            };
         if fresh {
             let (mc, ts, err) = cached.expect("checked above");
             return Sample {
@@ -1012,8 +1071,7 @@ fn decide(
         Some(current) if target < current => {
             // 最小保持时间只用于平滑自动曲线的降档。用户显式选择的手动/无级
             // 目标必须立即生效，否则守护进程会把刚设好的低档又顶回旧值。
-            let held =
-                mode != Mode::Auto || now.saturating_sub(state.last_change) >= cfg.min_hold;
+            let held = mode != Mode::Auto || now.saturating_sub(state.last_change) >= cfg.min_hold;
             if held {
                 changed = true;
                 reason.push_str(&format!(
@@ -1028,7 +1086,8 @@ fn decide(
                 duty = current;
                 reason.push_str(&format!(
                     "目标 {target} 低于当前 {current}，最小保持时间还需 {} 秒",
-                    cfg.min_hold.saturating_sub(now.saturating_sub(state.last_change))
+                    cfg.min_hold
+                        .saturating_sub(now.saturating_sub(state.last_change))
                 ));
             }
         }
@@ -1084,11 +1143,15 @@ fn sample_fields(samples: &[Sample]) -> Vec<(&'static str, String)> {
         let (mc_key, age_key, err_key) = source_keys(index);
         out.push((
             mc_key,
-            sample.map(|s| s.mc.to_string()).unwrap_or_else(|| "-1".into()),
+            sample
+                .map(|s| s.mc.to_string())
+                .unwrap_or_else(|| "-1".into()),
         ));
         out.push((
             age_key,
-            sample.map(|s| s.age.to_string()).unwrap_or_else(|| "-1".into()),
+            sample
+                .map(|s| s.age.to_string())
+                .unwrap_or_else(|| "-1".into()),
         ));
         out.push((
             err_key,
@@ -1180,7 +1243,11 @@ fn run_daemon() -> Result<()> {
             || next_cfg.fan_freq != cfg.fan_freq
         {
             if let Err(error) = ensure_driver(&next_cfg) {
-                log(LOG_ERROR, cfg.log_level, &format!("driver switch failed: {error}"));
+                log(
+                    LOG_ERROR,
+                    cfg.log_level,
+                    &format!("driver switch failed: {error}"),
+                );
             }
             path = duty_target_path(&next_cfg).unwrap_or(path.clone());
             // A fresh interface may have come up stopped; put a known-good
@@ -1308,13 +1375,27 @@ fn run_daemon() -> Result<()> {
             ),
             (
                 "temp_mc",
-                hottest.map(|(mc, _)| mc.to_string()).unwrap_or_else(|| "-1".into()),
+                hottest
+                    .map(|(mc, _)| mc.to_string())
+                    .unwrap_or_else(|| "-1".into()),
             ),
-            ("temp_source", hottest.map(|(_, n)| n.to_string()).unwrap_or_else(|| "none".into())),
+            (
+                "temp_source",
+                hottest
+                    .map(|(_, n)| n.to_string())
+                    .unwrap_or_else(|| "none".into()),
+            ),
             ("band", decision.band.to_string()),
             ("alarm", alarm.key().into()),
             ("alarm_msg", alarm_msg),
-            ("guarded", if decision.guarded { "1".into() } else { "0".into() }),
+            (
+                "guarded",
+                if decision.guarded {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+            ),
             ("interval", cfg.interval.to_string()),
             ("slow_interval", cfg.slow_interval.to_string()),
             ("min_hold", cfg.min_hold.to_string()),
@@ -1323,19 +1404,33 @@ fn run_daemon() -> Result<()> {
             ("fail_duty", cfg.fail_duty.to_string()),
             ("fail_count", cfg.fail_count.to_string()),
             ("misses", state.misses.to_string()),
-            ("crit_guard", if cfg.crit_guard { "1".into() } else { "0".into() }),
+            (
+                "crit_guard",
+                if cfg.crit_guard {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+            ),
             ("config_errors", cfg.errors.join(" | ")),
             ("log_level", cfg.log_level.to_string()),
             ("stop_duty", cfg.stop_duty.to_string()),
             ("fanval", encode_mode(mode).to_string()),
-            ("fanspd", read_trim(SPEED_FILE).unwrap_or_else(|| "0".into())),
+            (
+                "fanspd",
+                read_trim(SPEED_FILE).unwrap_or_else(|| "0".into()),
+            ),
         ];
         let mut all: Vec<(&str, String)> = fields;
         for (key, value) in sample_fields(&samples) {
             all.push((key, value));
         }
         if let Err(error) = write_state(&all) {
-            log(LOG_ERROR, cfg.log_level, &format!("state write failed: {error}"));
+            log(
+                LOG_ERROR,
+                cfg.log_level,
+                &format!("state write failed: {error}"),
+            );
         }
 
         // Reschedule only for the next loop; the page never drives timing.
@@ -1449,13 +1544,50 @@ fn cmd_snapshot() {
 
     if ts.is_some() && age <= interval * 3 {
         for key in [
-            "ts", "age", "daemon", "mode", "mode_code", "duty", "duty_sysfs", "duty_source",
-            "driver", "driver_state", "pwm_path", "temp", "temp_mc", "temp_source", "band",
-            "alarm", "alarm_msg", "guarded", "interval", "slow_interval", "min_hold",
-            "hysteresis", "policy", "fail_duty", "fail_count", "misses", "crit_guard",
-            "config_errors", "log_level", "stop_duty", "fanval", "fanspd", "cpu_mc", "cpu_age",
-            "cpu_err", "phy_mc", "phy_age", "phy_err", "wifi_mc", "wifi_age", "wifi_err",
-            "modem_mc", "modem_age", "modem_err",
+            "ts",
+            "age",
+            "daemon",
+            "mode",
+            "mode_code",
+            "duty",
+            "duty_sysfs",
+            "duty_source",
+            "driver",
+            "driver_state",
+            "pwm_path",
+            "temp",
+            "temp_mc",
+            "temp_source",
+            "band",
+            "alarm",
+            "alarm_msg",
+            "guarded",
+            "interval",
+            "slow_interval",
+            "min_hold",
+            "hysteresis",
+            "policy",
+            "fail_duty",
+            "fail_count",
+            "misses",
+            "crit_guard",
+            "config_errors",
+            "log_level",
+            "stop_duty",
+            "fanval",
+            "fanspd",
+            "cpu_mc",
+            "cpu_age",
+            "cpu_err",
+            "phy_mc",
+            "phy_age",
+            "phy_err",
+            "wifi_mc",
+            "wifi_age",
+            "wifi_err",
+            "modem_mc",
+            "modem_age",
+            "modem_err",
         ] {
             if key == "age" {
                 println!("age={age_text}");
@@ -1521,7 +1653,9 @@ fn cmd_snapshot() {
         ),
         (
             "duty_sysfs",
-            readback.map(|v| v.to_string()).unwrap_or_else(|| "-1".into()),
+            readback
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-1".into()),
         ),
         ("duty_source", "file".into()),
         ("driver", driver_key(resolve_driver(&cfg.fan_driver)).into()),
@@ -1547,7 +1681,9 @@ fn cmd_snapshot() {
         ),
         (
             "temp_mc",
-            hottest.map(|(mc, _)| mc.to_string()).unwrap_or_else(|| "-1".into()),
+            hottest
+                .map(|(mc, _)| mc.to_string())
+                .unwrap_or_else(|| "-1".into()),
         ),
         (
             "temp_source",
@@ -1555,7 +1691,10 @@ fn cmd_snapshot() {
                 .map(|(_, n)| n.to_string())
                 .unwrap_or_else(|| "none".into()),
         ),
-        ("band", band_initial(hottest.map(|(mc, _)| mc).unwrap_or(0), &cfg).to_string()),
+        (
+            "band",
+            band_initial(hottest.map(|(mc, _)| mc).unwrap_or(0), &cfg).to_string(),
+        ),
         (
             "alarm",
             if hottest.is_none() {
@@ -1586,7 +1725,11 @@ fn cmd_snapshot() {
         ("misses", "0".into()),
         (
             "crit_guard",
-            if cfg.crit_guard { "1".into() } else { "0".into() },
+            if cfg.crit_guard {
+                "1".into()
+            } else {
+                "0".into()
+            },
         ),
         ("config_errors", cfg.errors.join(" | ")),
         ("log_level", cfg.log_level.to_string()),
@@ -1595,7 +1738,10 @@ fn cmd_snapshot() {
             "fanval",
             read_trim(FANVAL_FILE).unwrap_or_else(|| "na".into()),
         ),
-        ("fanspd", read_trim(SPEED_FILE).unwrap_or_else(|| "0".into())),
+        (
+            "fanspd",
+            read_trim(SPEED_FILE).unwrap_or_else(|| "0".into()),
+        ),
     ];
     let mut all = fields;
     for (key, value) in sample_fields(&samples) {
@@ -1605,6 +1751,16 @@ fn cmd_snapshot() {
         println!("{key}={value}");
     }
     println!("snapshot=cli");
+}
+
+/// The `pwm-fan` hwmon node, reported separately from the interface actually
+/// driving the fan: on the 16GB AP3000M this node exists and stays at 0 while
+/// the fan is driven through /sys/kernel/duty_cycle, which is evidence the fan
+/// is not wired to that channel.
+fn hwmon_pwmfan_path() -> Option<PathBuf> {
+    pwm_paths()
+        .into_iter()
+        .find(|p| p.starts_with("/sys/class/hwmon"))
 }
 
 fn cmd_hwdetect() {
@@ -1637,6 +1793,18 @@ fn cmd_hwdetect() {
             .unwrap_or_else(|| "none".into())
     );
     let cfg = Config::load();
+    let pwmfan = hwmon_pwmfan_path();
+    println!(
+        "pwmfan_path={}\npwmfan_value={}",
+        pwmfan
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "none".into()),
+        pwmfan
+            .as_ref()
+            .and_then(read_trim)
+            .unwrap_or_else(|| "na".into())
+    );
     println!(
         "softpwm_loaded={}\nduty={}\ndriver={}\nstop_duty={}",
         module_loaded() as u8,
@@ -1662,7 +1830,12 @@ fn cmd_logs(lines: usize) {
             .parse::<u64>()
             .map(|t| {
                 let secs = t % 86_400;
-                format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+                format!(
+                    "{:02}:{:02}:{:02}",
+                    secs / 3600,
+                    (secs % 3600) / 60,
+                    secs % 60
+                )
             })
             .unwrap_or_else(|_| "--:--:--".into());
         println!("{clock} {rest}");
@@ -1696,7 +1869,11 @@ fn write_duty(cfg: &Config, path: &Path, value: u32, mirror: bool) -> Result<()>
         // The historic mirror lives under /usr/bin; a read-only root must not
         // abort a control action that already reached the hardware.
         if let Err(error) = write_value(SPEED_FILE, value) {
-            log(LOG_ERROR, cfg.log_level, &format!("fanspeed.conf mirror failed: {error}"));
+            log(
+                LOG_ERROR,
+                cfg.log_level,
+                &format!("fanspeed.conf mirror failed: {error}"),
+            );
         }
     }
     Ok(())
@@ -1872,10 +2049,7 @@ mod tests {
             ("temp_high", "90"),
         ]));
         assert_eq!(cfg.temp_low, 50_000);
-        assert!(cfg
-            .errors
-            .iter()
-            .any(|e| e.contains("温度阈值需严格递增")));
+        assert!(cfg.errors.iter().any(|e| e.contains("温度阈值需严格递增")));
     }
 
     #[test]
@@ -1911,7 +2085,11 @@ mod tests {
     fn band_uses_hysteresis_on_the_way_down() {
         let cfg = Config::default();
         assert_eq!(band_index(86_000, 0, &cfg), 3);
-        assert_eq!(band_index(61_000, 3, &cfg), 2, "no hysteresis floor crossed yet");
+        assert_eq!(
+            band_index(61_000, 3, &cfg),
+            2,
+            "no hysteresis floor crossed yet"
+        );
         // 85 - 2 = 83: dropping below the floor minus hysteresis releases one band.
         assert_eq!(band_index(82_500, 3, &cfg), 2);
         assert_eq!(band_index(58_000, 2, &cfg), 1);
@@ -1924,26 +2102,61 @@ mod tests {
     fn auto_loop_follows_the_curve_and_holds_before_dropping() {
         let cfg = Config::default();
         let mut state = LoopState::default();
-        let first = decide(&cfg, Mode::Auto, Some((70_000, "cpu")), None, &mut state, 100);
+        let first = decide(
+            &cfg,
+            Mode::Auto,
+            Some((70_000, "cpu")),
+            None,
+            &mut state,
+            100,
+        );
         assert_eq!(first.duty, 192);
         assert!(first.changed);
 
         // Same band, no write.
-        let same = decide(&cfg, Mode::Auto, Some((71_000, "cpu")), None, &mut state, 104);
+        let same = decide(
+            &cfg,
+            Mode::Auto,
+            Some((71_000, "cpu")),
+            None,
+            &mut state,
+            104,
+        );
         assert!(!same.changed);
 
         // Cooler, but inside the minimum hold window.
-        let held = decide(&cfg, Mode::Auto, Some((45_000, "cpu")), None, &mut state, 110);
+        let held = decide(
+            &cfg,
+            Mode::Auto,
+            Some((45_000, "cpu")),
+            None,
+            &mut state,
+            110,
+        );
         assert_eq!(held.duty, 192, "downshift must wait for min_hold");
         assert!(!held.changed);
 
         // After min_hold the level drops.
-        let dropped = decide(&cfg, Mode::Auto, Some((45_000, "cpu")), None, &mut state, 131);
+        let dropped = decide(
+            &cfg,
+            Mode::Auto,
+            Some((45_000, "cpu")),
+            None,
+            &mut state,
+            131,
+        );
         assert_eq!(dropped.duty, 64);
         assert!(dropped.changed);
 
         // A hot reading wins over the hold timer immediately.
-        let up = decide(&cfg, Mode::Auto, Some((90_000, "cpu")), None, &mut state, 133);
+        let up = decide(
+            &cfg,
+            Mode::Auto,
+            Some((90_000, "cpu")),
+            None,
+            &mut state,
+            133,
+        );
         assert_eq!(up.duty, 255);
         assert!(up.changed);
     }
@@ -1952,17 +2165,38 @@ mod tests {
     fn manual_mode_is_respected_until_the_guard_trips() {
         let cfg = Config::default();
         let mut state = LoopState::default();
-        let manual = decide(&cfg, Mode::Step(0), Some((55_000, "cpu")), None, &mut state, 10);
+        let manual = decide(
+            &cfg,
+            Mode::Step(0),
+            Some((55_000, "cpu")),
+            None,
+            &mut state,
+            10,
+        );
         assert_eq!(manual.duty, 64);
         assert!(!manual.guarded);
         assert_eq!(manual.alarm, Alarm::None);
 
-        let guarded = decide(&cfg, Mode::Step(0), Some((96_000, "cpu")), None, &mut state, 20);
+        let guarded = decide(
+            &cfg,
+            Mode::Step(0),
+            Some((96_000, "cpu")),
+            None,
+            &mut state,
+            20,
+        );
         assert_eq!(guarded.duty, 255);
         assert!(guarded.guarded);
         assert_eq!(guarded.alarm, Alarm::Thermal);
 
-        let released = decide(&cfg, Mode::Step(0), Some((55_000, "cpu")), None, &mut state, 100);
+        let released = decide(
+            &cfg,
+            Mode::Step(0),
+            Some((55_000, "cpu")),
+            None,
+            &mut state,
+            100,
+        );
         assert!(!released.guarded, "guard releases once below critical");
     }
 
@@ -1973,7 +2207,14 @@ mod tests {
             ..Config::default()
         };
         let mut state = LoopState::default();
-        let manual = decide(&cfg, Mode::Step(0), Some((120_000, "cpu")), None, &mut state, 10);
+        let manual = decide(
+            &cfg,
+            Mode::Step(0),
+            Some((120_000, "cpu")),
+            None,
+            &mut state,
+            10,
+        );
         assert_eq!(manual.duty, 64);
     }
 
@@ -1981,10 +2222,24 @@ mod tests {
     fn stepless_keeps_the_requested_level() {
         let cfg = Config::default();
         let mut state = LoopState::default();
-        let step = decide(&cfg, Mode::Stepless, Some((55_000, "cpu")), Some(170), &mut state, 10);
+        let step = decide(
+            &cfg,
+            Mode::Stepless,
+            Some((55_000, "cpu")),
+            Some(170),
+            &mut state,
+            10,
+        );
         assert_eq!(step.duty, 170);
         assert!(step.changed);
-        let again = decide(&cfg, Mode::Stepless, Some((56_000, "cpu")), Some(170), &mut state, 18);
+        let again = decide(
+            &cfg,
+            Mode::Stepless,
+            Some((56_000, "cpu")),
+            Some(170),
+            &mut state,
+            18,
+        );
         assert!(!again.changed, "an unchanged level must not be rewritten");
     }
 
@@ -1992,7 +2247,14 @@ mod tests {
     fn sensor_failure_escalates_after_the_configured_misses() {
         let cfg = Config::default();
         let mut state = LoopState::default();
-        decide(&cfg, Mode::Auto, Some((70_000, "cpu")), None, &mut state, 10);
+        decide(
+            &cfg,
+            Mode::Auto,
+            Some((70_000, "cpu")),
+            None,
+            &mut state,
+            10,
+        );
         for tick in 1..3 {
             let held = decide(&cfg, Mode::Auto, None, None, &mut state, 20 + tick);
             assert_eq!(held.duty, 192, "brief dropouts keep the last level");
@@ -2008,10 +2270,20 @@ mod tests {
         // (and not re-logged) on every single cycle.
         let held2 = decide(&cfg, Mode::Auto, None, None, &mut state, 38);
         assert_eq!(held2.duty, 255);
-        assert!(!held2.changed, "an unchanged fail-safe level must not be rewritten");
+        assert!(
+            !held2.changed,
+            "an unchanged fail-safe level must not be rewritten"
+        );
 
         // A good reading resets the counter.
-        let recovered = decide(&cfg, Mode::Auto, Some((30_000, "cpu")), None, &mut state, 40);
+        let recovered = decide(
+            &cfg,
+            Mode::Auto,
+            Some((30_000, "cpu")),
+            None,
+            &mut state,
+            40,
+        );
         assert_eq!(state.misses, 0, "a valid reading clears the miss streak");
         assert_eq!(recovered.alarm, Alarm::None);
     }
@@ -2025,14 +2297,51 @@ mod tests {
     }
 
     #[test]
+    fn phy_bucket_takes_the_hottest_chip_not_the_first() {
+        // Real AP3000M sample set: switch PHY 42 °C, two mt7915 radios at
+        // 66 °C, a cpu_thermal chip reporting a negative value, and a
+        // broken cpu thermal zone.
+        let chips = [42_000, -11_192, 66_000, 66_000, -12_712];
+        assert_eq!(
+            valid_max(chips.into_iter()),
+            Some(66_000),
+            "control must follow the hottest valid source"
+        );
+        assert_eq!(valid_max([-1_000_i64, -12_712_i64]), None);
+    }
+
+    #[test]
     fn sampler_reports_hottest_and_skips_invalid() {
         let samples = vec![
-            Sample { name: "cpu", mc: 51_000, age: 0, error: None },
-            Sample { name: "wifi", mc: -1, age: 0, error: Some("offline".into()) },
-            Sample { name: "modem", mc: 58_000, age: 1, error: None },
+            Sample {
+                name: "cpu",
+                mc: 51_000,
+                age: 0,
+                error: None,
+            },
+            Sample {
+                name: "wifi",
+                mc: -1,
+                age: 0,
+                error: Some("offline".into()),
+            },
+            Sample {
+                name: "modem",
+                mc: 58_000,
+                age: 1,
+                error: None,
+            },
         ];
         assert_eq!(Sampler::hottest(&samples), Some((58_000, "modem")));
-        assert_eq!(Sampler::hottest(&[Sample { name: "cpu", mc: -1, age: 0, error: None }]), None);
+        assert_eq!(
+            Sampler::hottest(&[Sample {
+                name: "cpu",
+                mc: -1,
+                age: 0,
+                error: None
+            }]),
+            None
+        );
     }
 
     #[test]
@@ -2101,12 +2410,26 @@ mod tests {
         let cfg = Config::default();
         let mut state = LoopState::default();
         // The curve has just raised the fan to full speed.
-        decide(&cfg, Mode::Auto, Some((90_000, "cpu")), None, &mut state, 100);
+        decide(
+            &cfg,
+            Mode::Auto,
+            Some((90_000, "cpu")),
+            None,
+            &mut state,
+            100,
+        );
         assert_eq!(state.applied, Some(255));
 
         // Seconds later the user picks the quiet level; min_hold must not
         // push the old duty back onto the fan.
-        let manual = decide(&cfg, Mode::Step(0), Some((90_000, "cpu")), None, &mut state, 104);
+        let manual = decide(
+            &cfg,
+            Mode::Step(0),
+            Some((90_000, "cpu")),
+            None,
+            &mut state,
+            104,
+        );
         assert_eq!(manual.duty, 64, "a manual downshift applies immediately");
         assert!(manual.changed);
     }
@@ -2115,13 +2438,34 @@ mod tests {
     fn stepless_returns_to_the_user_level_after_the_guard_clears() {
         let cfg = Config::default();
         let mut state = LoopState::default();
-        let picked = decide(&cfg, Mode::Stepless, Some((55_000, "cpu")), Some(120), &mut state, 10);
+        let picked = decide(
+            &cfg,
+            Mode::Stepless,
+            Some((55_000, "cpu")),
+            Some(120),
+            &mut state,
+            10,
+        );
         assert_eq!(picked.duty, 120);
 
-        decide(&cfg, Mode::Stepless, Some((99_000, "cpu")), Some(120), &mut state, 20);
+        decide(
+            &cfg,
+            Mode::Stepless,
+            Some((99_000, "cpu")),
+            Some(120),
+            &mut state,
+            20,
+        );
         assert_eq!(state.applied, Some(255), "guard takes over at full duty");
 
-        let back = decide(&cfg, Mode::Stepless, Some((55_000, "cpu")), Some(120), &mut state, 30);
+        let back = decide(
+            &cfg,
+            Mode::Stepless,
+            Some((55_000, "cpu")),
+            Some(120),
+            &mut state,
+            30,
+        );
         assert_eq!(back.duty, 120, "the requested level is restored");
         assert!(back.changed);
     }
