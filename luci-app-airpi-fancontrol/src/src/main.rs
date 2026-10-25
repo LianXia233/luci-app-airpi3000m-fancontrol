@@ -630,13 +630,49 @@ fn valid_mc(value: i64) -> bool {
     (1_000..=150_000).contains(&value)
 }
 
-/// Hottest plausible reading among `values`, ignoring out-of-range noise such
-/// as the negative cpu-thermal samples some AP3000M kernels report.
-fn valid_max(values: impl IntoIterator<Item = i64>) -> Option<i64> {
-    values.into_iter().filter(|v| valid_mc(*v)).max()
+/// Largest raw reading, without the validity filter.  Display must show what
+/// the chip actually reported — including a broken negative value — while
+/// arbitration drops anything outside [`valid_mc`].
+fn raw_max(values: impl IntoIterator<Item = i64>) -> Option<i64> {
+    values.into_iter().max()
 }
 
-fn read_cpu_mc() -> Option<i64> {
+/// Which display bucket an hwmon chip belongs to.  Fan control devices are not
+/// temperature sources; `mt7915_phy*` is the radio, `cpu_thermal` is the SoC.
+fn hwmon_bucket(name: &str) -> Option<&'static str> {
+    if matches!(name, "pwmfan" | "pwm-fan" | "fan") || name.starts_with("fan") {
+        return None;
+    }
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("mt79") || lower.starts_with("mt76") || lower.contains("wifi") {
+        Some("wifi")
+    } else if lower.contains("cpu") || lower.contains("thermal") || lower.contains("soc") {
+        Some("cpu")
+    } else {
+        Some("phy")
+    }
+}
+
+/// Raw `temp1_input` per bucket across every hwmon chip on the board.
+fn hwmon_temps() -> HashMap<&'static str, Vec<i64>> {
+    let mut buckets: HashMap<&'static str, Vec<i64>> = HashMap::new();
+    if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            let name = read_trim(dir.join("name")).unwrap_or_default();
+            let bucket = match hwmon_bucket(&name) {
+                Some(bucket) => bucket,
+                None => continue,
+            };
+            if let Some(v) = read_number(dir.join("temp1_input")) {
+                buckets.entry(bucket).or_default().push(v);
+            }
+        }
+    }
+    buckets
+}
+
+fn thermal_zone_temps() -> Vec<i64> {
     let mut values = Vec::new();
     if let Ok(entries) = fs::read_dir("/sys/class/thermal") {
         for entry in entries.flatten() {
@@ -654,31 +690,39 @@ fn read_cpu_mc() -> Option<i64> {
             }
         }
     }
-    valid_max(values)
+    values
 }
 
-/// Hottest `temp1_input` across every non-fan hwmon chip.  On the AP3000M this
-/// bucket holds both the switch PHY (`mdio_bus:*`, ~40 °C) and the Wi-Fi radios
-/// (`mt7915_phy*`, 60 °C+); stopping at the first match would under-report the
-/// control temperature and let the fan lag behind the real hotspot.
-fn read_phy_mc() -> Option<i64> {
-    let mut values = Vec::new();
-    if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
-        for entry in entries.flatten() {
-            let dir = entry.path();
-            let name = read_trim(dir.join("name")).unwrap_or_default();
-            if matches!(name.as_str(), "pwmfan" | "pwm-fan" | "fan") {
-                continue;
-            }
-            if let Some(v) = read_number(dir.join("temp1_input")) {
-                values.push(v);
-            }
-        }
+/// SoC temperature as reported by thermal zones plus any cpu-classified hwmon
+/// chip.  Returns the raw maximum so a broken sensor is still visible.
+fn read_cpu_mc() -> Option<i64> {
+    let mut values = thermal_zone_temps();
+    raw_extend(&mut values, hwmon_temps().get("cpu"));
+    raw_max(values)
+}
+
+fn raw_extend(target: &mut Vec<i64>, extra: Option<&Vec<i64>>) {
+    if let Some(extra) = extra {
+        target.extend(extra.iter().copied());
     }
-    valid_max(values)
 }
 
+/// Switch PHY and other non-radio, non-SoC sensors on the `mdio`/ethernet side.
+fn read_phy_mc() -> Option<i64> {
+    raw_max(hwmon_temps().get("phy").cloned().unwrap_or_default())
+}
+
+/// Radio temperature: the `mt7915_phy*` hwmon chips, merged with whatever
+/// `iwpriv` reports when that legacy interface exists.
 fn read_wifi_mc() -> Option<i64> {
+    let mut values = hwmon_temps().get("wifi").cloned().unwrap_or_default();
+    if let Some(v) = iwpriv_wifi_mc() {
+        values.push(v);
+    }
+    raw_max(values)
+}
+
+fn iwpriv_wifi_mc() -> Option<i64> {
     for dev in ["ra0", "rax0", "rai0"] {
         if !Path::new(&format!("/sys/class/net/{dev}")).exists() {
             continue;
@@ -692,8 +736,7 @@ fn read_wifi_mc() -> Option<i64> {
                     .find(|s| !s.is_empty())
             })
             .and_then(|s| s.parse::<i64>().ok())
-            .map(|n| n * 1000)
-            .filter(|v| valid_mc(*v));
+            .map(|n| n * 1000);
     }
     None
 }
@@ -717,7 +760,9 @@ fn parse_modem_temperature(text: &str) -> Option<i64> {
         .parse::<i64>()
         .ok()?;
     let mc = if value >= 1_000 { value } else { value * 1_000 };
-    valid_mc(mc).then_some(mc)
+    // Returned unfiltered: display must mirror what the modem reported, and
+    // arbitration filters through valid_mc() on its own.
+    Some(mc)
 }
 
 fn add_sensor(sensors: &mut Vec<Sensor>, name: &'static str, mc: i64) {
@@ -729,7 +774,8 @@ fn add_sensor(sensors: &mut Vec<Sensor>, name: &'static str, mc: i64) {
 }
 
 /// Aggregated reading used by the legacy temperature commands: every source,
-/// one entry per source, hottest wins.
+/// one entry per source, hottest wins.  Out-of-range values are left out so the
+/// control decision and `get_sys_temp.sh` output keep their old meaning.
 fn thermal_sensors() -> Vec<Sensor> {
     let mut out = Vec::new();
     for (name, mc) in [
@@ -738,106 +784,124 @@ fn thermal_sensors() -> Vec<Sensor> {
         ("wifi", read_wifi_mc()),
         ("modem", read_modem_mc()),
     ] {
-        if let Some(mc) = mc {
+        if let Some(mc) = mc.filter(|v| valid_mc(*v)) {
             add_sensor(&mut out, name, mc);
         }
     }
     out
 }
 
-/// One source as seen by the daemon, including how old the value is so the UI
-/// can tell a live reading from a cached one.  `age` is seconds since the
-/// sample was taken, or -1 when the source produced no value at all.
+/// One source as seen by the daemon.  `mc` is the raw reading (never silently
+/// replaced by a plausible default), `valid` says whether it may drive the fan,
+/// and `age` is seconds since the sample (-1 when nothing was ever read).
 #[derive(Clone, Debug)]
 struct Sample {
     name: &'static str,
     mc: i64,
+    valid: bool,
     age: i64,
     error: Option<String>,
 }
 
+impl Sample {
+    /// A source that yielded a reading; `None` mc means the interface is absent.
+    fn from(name: &'static str, mc: Option<i64>, age: i64, missing: &str) -> Sample {
+        match mc {
+            Some(mc) if valid_mc(mc) => Sample {
+                name,
+                mc,
+                valid: true,
+                age,
+                error: None,
+            },
+            Some(mc) => Sample {
+                name,
+                mc,
+                valid: false,
+                age,
+                error: Some(format!(
+                    "原始读数 {:.1}℃ 越界，不参与仲裁",
+                    mc as f64 / 1000.0
+                )),
+            },
+            None => Sample {
+                name,
+                mc: i64::MIN,
+                valid: false,
+                age: -1,
+                error: Some(missing.to_string()),
+            },
+        }
+    }
+}
+
+/// Shown when a source has no interface at all on this board.
+const SOURCE_MISSING: [&str; 4] = [
+    "thermal zone 与 cpu hwmon 均无节点",
+    "交换 PHY hwmon temp1_input 无节点",
+    "mt79xx hwmon 与 iwpriv 均不可用",
+    "modem_ctrl 无温度字段",
+];
+
 #[derive(Default)]
 struct Sampler {
-    /// source index -> (value, timestamp, error)
-    cache: HashMap<usize, (i64, u64, Option<String>)>,
+    /// source index -> (raw reading, timestamp) for the fork-backed sources
+    cache: HashMap<usize, (Option<i64>, u64)>,
 }
 
 impl Sampler {
     fn read(&mut self, index: usize, slow: bool, now: u64, slow_interval: u64) -> Sample {
-        let cached = self
-            .cache
-            .get(&index)
-            .map(|(mc, ts, err)| (*mc, *ts, err.clone()));
-        let fresh = slow
-            && match cached {
-                Some((_, ts, _)) => now.saturating_sub(ts) < slow_interval,
-                None => false,
-            };
-        if fresh {
-            let (mc, ts, err) = cached.expect("checked above");
-            return Sample {
-                name: SOURCES[index],
-                mc,
-                age: (now - ts) as i64,
-                error: err,
-            };
+        let name = SOURCES[index];
+        if slow {
+            if let Some((mc, ts)) = self.cache.get(&index).copied() {
+                if now.saturating_sub(ts) < slow_interval {
+                    return Sample::from(name, mc, (now - ts) as i64, SOURCE_MISSING[index]);
+                }
+            }
         }
-        let (mc, error) = match index {
-            0 => match read_cpu_mc() {
-                Some(mc) => (mc, None),
-                None => (-1, Some("thermal zone 无有效读数".into())),
-            },
-            1 => match read_phy_mc() {
-                Some(mc) => (mc, None),
-                None => (-1, Some("hwmon temp1_input 不可用".into())),
-            },
-            2 => match read_wifi_mc() {
-                Some(mc) => (mc, None),
-                None => (-1, Some("iwpriv 温度接口不可用".into())),
-            },
-            _ => match read_modem_mc() {
-                Some(mc) => (mc, None),
-                None => (-1, Some("modem_ctrl 无温度字段".into())),
-            },
+        let mc = match index {
+            0 => read_cpu_mc(),
+            1 => read_phy_mc(),
+            2 => read_wifi_mc(),
+            _ => read_modem_mc(),
         };
-        let sample = Sample {
-            name: SOURCES[index],
-            mc,
-            age: 0,
-            error,
-        };
-        self.cache
-            .insert(index, (sample.mc, now, sample.error.clone()));
-        sample
+        if slow {
+            self.cache.insert(index, (mc, now));
+        }
+        Sample::from(name, mc, 0, SOURCE_MISSING[index])
     }
 
     fn disabled(index: usize, error: &str) -> Sample {
         Sample {
             name: SOURCES[index],
-            mc: -1,
+            mc: i64::MIN,
+            valid: false,
             age: -1,
             error: Some(error.to_string()),
         }
     }
 
     fn collect(&mut self, cfg: &Config, now: u64) -> Vec<Sample> {
+        let radios_on_hwmon = hwmon_temps().contains_key("wifi");
         let mut out = Vec::new();
         for (index, name) in SOURCES.iter().enumerate() {
             if !cfg.enabled[index] {
                 out.push(Self::disabled(index, "已在设置中停用"));
                 continue;
             }
-            let slow = matches!(*name, "wifi" | "modem");
+            // modem 一定要 ubus；wifi 只有退到 iwpriv 时才需要 fork，
+            // 板载 mt79xx hwmon 可用时就当快采源，每轮都读。
+            let slow = matches!(*name, "modem") || (*name == "wifi" && !radios_on_hwmon);
             out.push(self.read(index, slow, now, cfg.slow_interval));
         }
         out
     }
 
-    /// Hottest plausible reading across enabled sources.
+    /// Hottest valid reading across enabled sources.
     fn hottest(samples: &[Sample]) -> Option<(i64, &'static str)> {
         samples
             .iter()
-            .filter(|s| valid_mc(s.mc))
+            .filter(|s| s.valid)
             .max_by_key(|s| s.mc)
             .map(|s| (s.mc, s.name))
     }
@@ -1127,25 +1191,35 @@ fn render_state(fields: &[(&str, String)]) -> String {
 }
 
 /// Static state-file keys per source index, so the loop never allocates keys.
-fn source_keys(index: usize) -> (&'static str, &'static str, &'static str) {
+fn source_keys(index: usize) -> (&'static str, &'static str, &'static str, &'static str) {
     match index {
-        0 => ("cpu_mc", "cpu_age", "cpu_err"),
-        1 => ("phy_mc", "phy_age", "phy_err"),
-        2 => ("wifi_mc", "wifi_age", "wifi_err"),
-        _ => ("modem_mc", "modem_age", "modem_err"),
+        0 => ("cpu_mc", "cpu_valid", "cpu_age", "cpu_err"),
+        1 => ("phy_mc", "phy_valid", "phy_age", "phy_err"),
+        2 => ("wifi_mc", "wifi_valid", "wifi_age", "wifi_err"),
+        _ => ("modem_mc", "modem_valid", "modem_age", "modem_err"),
     }
 }
 
 fn sample_fields(samples: &[Sample]) -> Vec<(&'static str, String)> {
-    let mut out = Vec::with_capacity(SOURCES.len() * 3);
+    let mut out = Vec::with_capacity(SOURCES.len() * 4);
     for (index, name) in SOURCES.iter().enumerate() {
         let sample = samples.iter().find(|s| s.name == *name);
-        let (mc_key, age_key, err_key) = source_keys(index);
+        let (mc_key, valid_key, age_key, err_key) = source_keys(index);
+        // Raw value is always emitted; i64::MIN means "no node at all" and is
+        // flattened to -1 so the page can tell "absent" from "0 °C".
         out.push((
             mc_key,
+            match sample {
+                Some(s) if s.mc != i64::MIN => s.mc.to_string(),
+                _ => "-1".into(),
+            },
+        ));
+        out.push((
+            valid_key,
             sample
-                .map(|s| s.mc.to_string())
-                .unwrap_or_else(|| "-1".into()),
+                .map(|s| if s.valid { "1" } else { "0" })
+                .unwrap_or("0")
+                .to_string(),
         ));
         out.push((
             age_key,
@@ -1577,15 +1651,19 @@ fn cmd_snapshot() {
             "fanval",
             "fanspd",
             "cpu_mc",
+            "cpu_valid",
             "cpu_age",
             "cpu_err",
             "phy_mc",
+            "phy_valid",
             "phy_age",
             "phy_err",
             "wifi_mc",
+            "wifi_valid",
             "wifi_age",
             "wifi_err",
             "modem_mc",
+            "modem_valid",
             "modem_age",
             "modem_err",
         ] {
@@ -1606,6 +1684,7 @@ fn cmd_snapshot() {
     // the sources that would cost an iwpriv/ubus fork per page refresh.
     let cfg = Config::load();
     let now = now_secs();
+    let radios_on_hwmon = hwmon_temps().contains_key("wifi");
     let mut sampler = Sampler::default();
     let mut samples: Vec<Sample> = Vec::new();
     for (index, name) in SOURCES.iter().enumerate() {
@@ -1613,19 +1692,21 @@ fn cmd_snapshot() {
             samples.push(Sampler::disabled(index, "已在设置中停用"));
             continue;
         }
-        if matches!(*name, "cpu" | "phy") {
+        let fast = matches!(*name, "cpu" | "phy") || (*name == "wifi" && radios_on_hwmon);
+        if fast {
             samples.push(sampler.read(index, false, now, cfg.slow_interval));
             continue;
         }
-        let (mc_key, _, _) = source_keys(index);
+        let (mc_key, _, _, _) = source_keys(index);
         match state
             .get(mc_key)
             .and_then(|v| v.parse::<i64>().ok())
-            .filter(|v| valid_mc(*v))
+            .filter(|v| *v != -1)
         {
             Some(mc) => samples.push(Sample {
                 name: SOURCES[index],
                 mc,
+                valid: valid_mc(mc),
                 age: if age == u64::MAX { -1 } else { age as i64 },
                 error: Some("沿用上一次守护进程采样".into()),
             }),
@@ -2297,49 +2378,87 @@ mod tests {
     }
 
     #[test]
-    fn phy_bucket_takes_the_hottest_chip_not_the_first() {
-        // Real AP3000M sample set: switch PHY 42 °C, two mt7915 radios at
-        // 66 °C, a cpu_thermal chip reporting a negative value, and a
-        // broken cpu thermal zone.
-        let chips = [42_000, -11_192, 66_000, 66_000, -12_712];
+    fn hwmon_chips_are_classified_into_the_right_display_bucket() {
+        // Chip names observed on the AP3000M.
+        assert_eq!(hwmon_bucket("mt7915_phy0"), Some("wifi"));
+        assert_eq!(hwmon_bucket("mt7915_phy1"), Some("wifi"));
+        assert_eq!(hwmon_bucket("cpu_thermal"), Some("cpu"));
+        assert_eq!(hwmon_bucket("mdio_bus:01"), Some("phy"));
         assert_eq!(
-            valid_max(chips.into_iter()),
-            Some(66_000),
-            "control must follow the hottest valid source"
+            hwmon_bucket("pwmfan"),
+            None,
+            "fan node is not a temperature source"
         );
-        assert_eq!(valid_max([-1_000_i64, -12_712_i64]), None);
+        assert_eq!(hwmon_bucket("pwm-fan"), None);
+    }
+
+    #[test]
+    fn broken_cpu_reading_is_shown_but_never_drives_the_fan() {
+        // Real sample set from the 16GB unit: thermal zone and cpu_thermal both
+        // report negatives, the radios sit at 66 °C, the switch PHY at 42 °C.
+        let samples = vec![
+            Sample::from("cpu", Some(-11_192), 0, SOURCE_MISSING[0]),
+            Sample::from("phy", Some(42_000), 0, SOURCE_MISSING[1]),
+            Sample::from("wifi", Some(66_000), 0, SOURCE_MISSING[2]),
+            Sampler::disabled(3, "modem_ctrl 无温度字段"),
+        ];
+
+        // CPU is still displayed, with its raw value and a reason.
+        let cpu = samples
+            .iter()
+            .find(|s| s.name == "cpu")
+            .expect("cpu sample");
+        assert_eq!(cpu.mc, -11_192, "raw value must survive for display");
+        assert!(!cpu.valid);
+        assert!(cpu.error.as_deref().unwrap().contains("越界"));
+
+        // A missing interface stays distinguishable from a broken reading.
+        let modem = samples
+            .iter()
+            .find(|s| s.name == "modem")
+            .expect("modem sample");
+        assert_eq!(modem.mc, i64::MIN);
+        assert_eq!(modem.age, -1);
+
+        // Arbitration ignores the broken CPU and takes the hottest valid source.
+        assert_eq!(Sampler::hottest(&samples), Some((66_000, "wifi")));
+    }
+
+    #[test]
+    fn state_fields_carry_raw_value_validity_age_and_reason() {
+        let samples = vec![
+            Sample::from("cpu", Some(-12_712), 0, SOURCE_MISSING[0]),
+            Sample::from("wifi", Some(66_000), 4, SOURCE_MISSING[2]),
+        ];
+        let fields = sample_fields(&samples);
+        let get = |key: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("cpu_mc").as_deref(), Some("-12712"));
+        assert_eq!(get("cpu_valid").as_deref(), Some("0"));
+        assert!(get("cpu_err").unwrap().contains("越界"));
+        assert_eq!(get("wifi_mc").as_deref(), Some("66000"));
+        assert_eq!(get("wifi_valid").as_deref(), Some("1"));
+        assert_eq!(get("wifi_age").as_deref(), Some("4"));
+        assert_eq!(get("wifi_err").as_deref(), Some(""));
+        // A source that never produced a reading flattens to -1, not i64::MIN.
+        assert_eq!(get("phy_mc").as_deref(), Some("-1"));
+        assert_eq!(get("phy_age").as_deref(), Some("-1"));
     }
 
     #[test]
     fn sampler_reports_hottest_and_skips_invalid() {
         let samples = vec![
-            Sample {
-                name: "cpu",
-                mc: 51_000,
-                age: 0,
-                error: None,
-            },
-            Sample {
-                name: "wifi",
-                mc: -1,
-                age: 0,
-                error: Some("offline".into()),
-            },
-            Sample {
-                name: "modem",
-                mc: 58_000,
-                age: 1,
-                error: None,
-            },
+            Sample::from("cpu", Some(51_000), 0, SOURCE_MISSING[0]),
+            Sample::from("wifi", None, 0, SOURCE_MISSING[2]),
+            Sample::from("modem", Some(58_000), 1, SOURCE_MISSING[3]),
         ];
         assert_eq!(Sampler::hottest(&samples), Some((58_000, "modem")));
         assert_eq!(
-            Sampler::hottest(&[Sample {
-                name: "cpu",
-                mc: -1,
-                age: 0,
-                error: None
-            }]),
+            Sampler::hottest(&[Sample::from("cpu", Some(-1_000), 0, SOURCE_MISSING[0])]),
             None
         );
     }
