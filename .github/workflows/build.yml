@@ -173,30 +173,28 @@ jobs:
         working-directory: sdk
         run: |
           set -euxo pipefail
-          make defconfig
-          # 幂等:先删除旧的 airpi 相关配置行,再追加,避免缓存 SDK 中残留的
-          # .config 被重复追加导致配置冲突(这是静默编译 exit code 2 的常见诱因)。
-          sed -i '/CONFIG_PACKAGE_luci-app-airpi-fancontrol/d' .config
-          sed -i '/CONFIG_PACKAGE_kmod-airpi-gpio-fan/d' .config
-          cat >> .config <<'EOF'
+          # 本 SDK 的 kconfig 对 .config 中重复出现的符号采用「首个赋值优先」：
+          # 若先 make defconfig（默认 ALL=y，会写入数千行 =m），再追加
+          # "# CONFIG_PACKAGE_lua is not set" 之类的行，追加行永远不生效。
+          # 因此跳过初始 defconfig，直接从干净种子文件一次性生成完整配置。
+          # 幂等:缓存 SDK 中可能残留旧 .config，先删除。
+          rm -f .config
+          cat > .config <<'EOF'
           CONFIG_PACKAGE_luci-app-airpi-fancontrol=m
           CONFIG_PACKAGE_kmod-airpi-gpio-fan=m
-          # SDK 自带的 Config-build.in 把 ALL_KMODS / ALL_NONSHARED 默认为 y:
-          #   - ALL_KMODS 会让 package/kernel/linux 全量编译数千个无关内核模块,
-          #     单这一项就占掉约 2 小时;
-          #   - ALL_NONSHARED 会把所有 feed 包默认选成 =m,把 lucihttp 的 lua
-          #     变体(在 24.10 之外的新树上因 lua.h 未 staged 而编译失败)和
-          #     ImmortalWrt master 上 ucode-mod-ffi(+libffi,其 libffi 3.4.7
-          #     staging 存在 aarch64-openwrt-linux*/fficonfig.h 找不到的打包
-          #     bug)这类无关组件拖进依赖闭包。
-          # 显式关闭,把构建闭包收敛到本应用的真实依赖。
+          # SDK 的 Config.in 把 ALL 默认置 y（BUILDBOT 预设），连带
+          # ALL_KMODS / ALL_NONSHARED，把数千个无关包拖成 =m：
+          #   - liblucihttp-lua 被选中，lua 变体因 lua.h 未 staged 编译失败
+          #     （v7.0.0 在 25.12 / master 上的失败根因）
+          #   - ImmortalWrt master 上 ucode-mod-ffi(+libffi) 进入闭包，该树
+          #     libffi 3.4.7 staging 存在打包 bug（v7.0.1 的失败根因）
+          # 显式关闭，把构建闭包收敛到本应用的真实依赖。
           # CONFIG_ALL is not set
           # CONFIG_ALL_KMODS is not set
           # CONFIG_ALL_NONSHARED is not set
           # 退役 lua:本应用是 JS(客户端视图)+ ucode(LuCI 运行时)+ Rust
-          # (守护进程)架构,luci-base 在 24.10 / 25.12 / master 上都只依赖
-          # ucode 系包,不需要任何 lua 组件。libubox 的 PKG_BUILD_DEPENDS:=lua
-          # 仍会作为源码级构建依赖编出 liblua,但没有任何包再构建 lua 绑定。
+          # (守护进程)架构，luci-base 在 24.10 / 25.12 / master 上都只依赖
+          # ucode 系包，不需要任何 lua 组件。
           # CONFIG_PACKAGE_lua is not set
           # CONFIG_PACKAGE_liblua is not set
           # CONFIG_PACKAGE_luci-lua-runtime is not set
