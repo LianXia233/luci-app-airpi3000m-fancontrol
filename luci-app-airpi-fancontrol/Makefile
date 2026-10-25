@@ -5,6 +5,18 @@
 # luci-app-airpi-fancontrol
 #   Fan control web UI for the AirPi AP3000M (MediaTek MT7981B / filogic).
 #
+# v7.0.2: retire Lua from the build closure entirely (CI refactor).
+#   - the web stack is JS (client view) + ucode (LuCI runtime) + Rust (daemon);
+#     no .lua file exists in this repository and luci-base only needs the
+#     ucode-family packages on 24.10 / 25.12 / master alike
+#   - the CI workflow no longer selects lua/liblua nor pre-builds lua: the
+#     SDK's ALL_KMODS/ALL_NONSHARED defaults (both y) were what dragged the
+#     liblucihttp-lua variant (lua.h not staged -> build failure) and, on
+#     immortalwrt master, ucode-mod-ffi (+libffi, whose libffi 3.4.7 staging
+#     is broken there) into the dependency closure
+#   - disabling ALL_KMODS also stops package/kernel/linux from building every
+#     kernel module in the SDK, which alone used to cost ~2 hours per job
+#
 # v7.0.1: frontend rendering fixes only (no backend change).
 #   - SVG nodes were created in the HTML namespace, so the trend chart, the
 #     curve preview and the topology drew nothing at all
@@ -43,7 +55,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-airpi-fancontrol
-PKG_VERSION:=7.0.1
+PKG_VERSION:=7.0.2
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community

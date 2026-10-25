@@ -2,6 +2,27 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [7.0.2] - 2026-10-26
+
+### 变更
+
+- **彻底退役 lua（构建闭包层面）**：本应用实际架构为 JS（客户端视图）+ ucode（LuCI
+  运行时）+ Rust（守护进程），仓库内本就不存在任何 `.lua` 文件；经核实 luci-base 在
+  OpenWrt 24.10 / 25.12 / master 上均只依赖 ucode 系包。CI 不再选中 lua/liblua，
+  也不再需要 v7.0.1 的"预编译 lua 依赖"步骤
+- **CI 修复**：SDK 的 `Config-build.in` 默认 `ALL_KMODS=y`、`ALL_NONSHARED=y`，
+  后者把全部 feed 包默认选成 `=m`，导致：
+  - `liblucihttp-lua`（lua 变体）进入 lucihttp 源码包编译，而 lua 头文件未 staged，
+    报 `lua.h: No such file or directory`（v7.0.0 在 25.12 / master 上的失败根因）；
+  - ImmortalWrt master 上 `ucode-mod-ffi`（`DEPENDS:=+libffi`）连带 libffi 进入闭包，
+    而该树 libffi 3.4.7 的 staging 存在 `aarch64-openwrt-linux*/fficonfig.h` 找不到的
+    打包 bug（v7.0.1 的失败根因）。
+  现在生成编译配置时显式关闭 `ALL` / `ALL_KMODS` / `ALL_NONSHARED` 及全部 lua 组件，
+  并在配置生成后校验闭包中不再出现 lua 组件，违例直接失败
+- **编译提速**：关闭 `ALL_KMODS` 后 `package/kernel/linux` 不再全量编译 SDK 内数千个
+  无关内核模块（实测该步骤占单个作业约 118 分钟），构建闭包收敛到真实依赖后
+  单目标耗时预期从约 2 小时降到 15 分钟量级
+
 ## [7.0.1] - 2026-10-25
 
 > [!IMPORTANT]
