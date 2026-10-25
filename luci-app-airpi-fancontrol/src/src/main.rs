@@ -115,29 +115,23 @@ fn log(level: u8, threshold: u8, msg: &str) {
             use std::io::Write;
             f.write_all(line.as_bytes())
         });
-    send_syslog(&line);
+    send_syslog(msg);
 }
 
 #[cfg(unix)]
-fn send_syslog(line: &str) {
+fn send_syslog(msg: &str) {
     use std::os::unix::net::UnixDatagram;
-    // The daemon strips its own bookkeeping prefix before handing the text to
-    // the system logger, which adds its own timestamp.
-    let body = line.splitn(2, "] ").nth(1).unwrap_or(line);
-    let body = body
-        .splitn(2, "] ")
-        .nth(1)
-        .unwrap_or(body)
-        .trim_end();
+    // Busybox syslogd supplies its own timestamp for messages received on
+    // /dev/log, so only the tag and the text are handed over.
     if let Ok(socket) = UnixDatagram::unbound() {
         if socket.connect("/dev/log").is_ok() {
-            let _ = socket.send(format("<14>airpi-fancontrol: {body}"));
+            let _ = socket.send(format!("<14>airpi-fancontrol: {msg}").as_bytes());
         }
     }
 }
 
 #[cfg(not(unix))]
-fn send_syslog(_line: &str) {}
+fn send_syslog(_msg: &str) {}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -330,8 +324,11 @@ impl Config {
             read_bounded(kv, "fail_count", cfg.fail_count as i64, 1, 10, &mut errors) as u64;
         cfg.log_level = read_bounded(kv, "log_level", cfg.log_level as i64, 0, 3, &mut errors) as u8;
         cfg.fan_gpio = read_bounded(kv, "fan_gpio", cfg.fan_gpio as i64, 0, 1023, &mut errors) as u32;
-        cfg.fan_freq =
-            read_bounded(kv, "fan_freq", cfg.fan_freq as i64, 100, 1_000_000, &mut errors) as u32;
+        // The driver splits `period` into 256 slices and floors each slice at
+        // 1 µs, so a period below 256 µs means ~1M hrtimer wakeups per second.
+        // Loading enforced that floor; a hot parameter write must not bypass it.
+        cfg.fan_freq = read_bounded(kv, "fan_freq", cfg.fan_freq as i64, 256, 1_000_000, &mut errors)
+            as u32;
 
         cfg.temp_low = read_celsius(kv, "temp_low", cfg.temp_low, &mut errors);
         cfg.temp_mid = read_celsius(kv, "temp_mid", cfg.temp_mid, &mut errors);
@@ -1013,11 +1010,20 @@ fn decide(
             ));
         }
         Some(current) if target < current => {
-            let held = now.saturating_sub(state.last_change) >= cfg.min_hold;
+            // 最小保持时间只用于平滑自动曲线的降档。用户显式选择的手动/无级
+            // 目标必须立即生效，否则守护进程会把刚设好的低档又顶回旧值。
+            let held =
+                mode != Mode::Auto || now.saturating_sub(state.last_change) >= cfg.min_hold;
             if held {
                 changed = true;
-                reason
-                    .push_str(&format!("降至 {target}（已低于阈值并满足迟滞）"));
+                reason.push_str(&format!(
+                    "降至 {target}（{}）",
+                    if mode == Mode::Auto {
+                        "曲线降档，迟滞与最小保持已满足"
+                    } else {
+                        "用户显式设定，不等待最小保持"
+                    }
+                ));
             } else {
                 duty = current;
                 reason.push_str(&format!(
@@ -1205,8 +1211,11 @@ fn run_daemon() -> Result<()> {
         let drift = readback != Some(decision.duty);
         let mut written = false;
         let mut write_error: Option<String> = None;
+        // 临时接管(临界守护 / 传感器失效兜底)不回写 fanspeed.conf，
+        // 否则无级模式的用户目标会被覆盖掉，条件消失后回不去。
+        let mirror = !(decision.guarded || decision.alarm == Alarm::Sensor);
         if decision.changed || drift {
-            match write_duty(&cfg, &path, decision.duty) {
+            match write_duty(&cfg, &path, decision.duty, mirror) {
                 Ok(()) => written = true,
                 Err(error) => {
                     state.applied = readback;
@@ -1675,12 +1684,20 @@ fn start_service_if_dead() -> Result<()> {
     Err("failed to start airpi-fancontrol".into())
 }
 
-fn write_duty(cfg: &Config, path: &Path, value: u32) -> Result<()> {
+/// Writes the fan interface and, unless this is a temporary safety override,
+/// mirrors the value into `/usr/bin/fanspeed.conf`.
+///
+/// The mirror doubles as the user's stepless request, so an override must not
+/// overwrite it — otherwise the fan would stay at the override level after the
+/// critical condition clears instead of returning to the slider setting.
+fn write_duty(cfg: &Config, path: &Path, value: u32, mirror: bool) -> Result<()> {
     write_value(path, value)?;
-    // The historic mirror lives under /usr/bin; a read-only root must not
-    // abort a control action that already reached the hardware.
-    if let Err(error) = write_value(SPEED_FILE, value) {
-        log(LOG_ERROR, cfg.log_level, &format!("fanspeed.conf mirror failed: {error}"));
+    if mirror {
+        // The historic mirror lives under /usr/bin; a read-only root must not
+        // abort a control action that already reached the hardware.
+        if let Err(error) = write_value(SPEED_FILE, value) {
+            log(LOG_ERROR, cfg.log_level, &format!("fanspeed.conf mirror failed: {error}"));
+        }
     }
     Ok(())
 }
@@ -1691,7 +1708,7 @@ fn cmd_set(speed: &str, mode: &str) -> Result<()> {
     let cfg = Config::load();
     let path = duty_target_path(&cfg)?;
     write_value(FANVAL_FILE, code)?;
-    write_duty(&cfg, &path, speed)?;
+    write_duty(&cfg, &path, speed, true)?;
     if let Err(error) = start_service_if_dead() {
         log(LOG_ERROR, cfg.log_level, &error);
     }
@@ -1713,7 +1730,7 @@ fn cmd_stepless(speed: &str) -> Result<()> {
     let cfg = Config::load();
     let path = duty_target_path(&cfg)?;
     write_value(FANVAL_FILE, 999)?;
-    write_duty(&cfg, &path, speed)?;
+    write_duty(&cfg, &path, speed, true)?;
     if let Err(error) = start_service_if_dead() {
         log(LOG_ERROR, cfg.log_level, &error);
     }
@@ -2061,5 +2078,51 @@ mod tests {
         assert_eq!(cfg.fan_gpio, 540);
         assert_eq!(cfg.fan_freq, 15_000);
         assert_eq!(cfg.errors.len(), 2, "{:?}", cfg.errors);
+    }
+
+    #[test]
+    fn pwm_period_floor_matches_the_driver_slice_resolution() {
+        // The driver divides the period into 256 slices of at least 1 µs each;
+        // a shorter period would mean ~1M hrtimer wakeups per second.
+        let too_short = Config::from_kv(&kv(&[("fan_freq", "255")]));
+        assert_eq!(too_short.fan_freq, 15_000);
+        assert!(too_short
+            .errors
+            .iter()
+            .any(|e| e.contains("fan_freq") && e.contains("256")));
+
+        let boundary = Config::from_kv(&kv(&[("fan_freq", "256")]));
+        assert_eq!(boundary.fan_freq, 256);
+        assert!(boundary.errors.is_empty(), "{:?}", boundary.errors);
+    }
+
+    #[test]
+    fn explicit_manual_choice_ignores_the_auto_curve_hold_timer() {
+        let cfg = Config::default();
+        let mut state = LoopState::default();
+        // The curve has just raised the fan to full speed.
+        decide(&cfg, Mode::Auto, Some((90_000, "cpu")), None, &mut state, 100);
+        assert_eq!(state.applied, Some(255));
+
+        // Seconds later the user picks the quiet level; min_hold must not
+        // push the old duty back onto the fan.
+        let manual = decide(&cfg, Mode::Step(0), Some((90_000, "cpu")), None, &mut state, 104);
+        assert_eq!(manual.duty, 64, "a manual downshift applies immediately");
+        assert!(manual.changed);
+    }
+
+    #[test]
+    fn stepless_returns_to_the_user_level_after_the_guard_clears() {
+        let cfg = Config::default();
+        let mut state = LoopState::default();
+        let picked = decide(&cfg, Mode::Stepless, Some((55_000, "cpu")), Some(120), &mut state, 10);
+        assert_eq!(picked.duty, 120);
+
+        decide(&cfg, Mode::Stepless, Some((99_000, "cpu")), Some(120), &mut state, 20);
+        assert_eq!(state.applied, Some(255), "guard takes over at full duty");
+
+        let back = decide(&cfg, Mode::Stepless, Some((55_000, "cpu")), Some(120), &mut state, 30);
+        assert_eq!(back.duty, 120, "the requested level is restored");
+        assert!(back.changed);
     }
 }
