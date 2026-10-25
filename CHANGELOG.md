@@ -98,6 +98,16 @@
   两段代码只在 Linux 目标上参与编译，Windows 宿主机上的 `cargo test`/`clippy` 都覆盖不到，
   是 CI 交叉编译暴露的。本地已加入 `cargo check --target aarch64-unknown-linux-musl` 作为常规步骤
 
+### CI 修复（feeds 缓存）
+
+- **`feeds update -a` 在缓存命中时必然失败**：OpenWrt 发布版 SDK 的 `feeds/base` 以分支语法（`;v24.10.8`）声明，
+  解压后该仓库处于 detached HEAD。此前「更新 feeds」在缓存未命中时走全新 clone，不会触发 `git pull`，
+  问题一直未暴露；一旦 SDK/feeds 缓存命中，`scripts/feeds` 会对其执行 `git pull --ff-only`，
+  在 detached HEAD 下报 "You are not currently on a branch" 并使整个 `update -a` 以 exit code 1
+  中断构建（ImmortalWrt master 的 feeds.conf 无 base feed，故不受影响）。
+  现在更新前先移除 `feeds/base` 目录，让脚本改走 `init_branch` 重新 clone；
+  其余 feed（packages/luci/routing/telephony，均为 `^commit` 固定语法，缓存命中时本就跳过更新）行为不变
+
 ### 实机反馈修正（第二轮）
 
 - **温度来源按芯片归类**：hwmon 芯片名 `mt79xx`/`mt76xx` 归入 Wi-Fi 射频，`cpu_thermal` 归入 CPU，

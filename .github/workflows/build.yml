@@ -130,6 +130,16 @@ jobs:
           # 全量更新:本项目依赖 luci-base（来自 feeds/luci），
           # 选择性 update 在某些 SDK（如 ImmortalWrt）下会漏掉依赖导致后续
           # package/luci-app-airpi-fancontrol/compile 以 exit code 2 静默失败。
+          #
+          # 但 OpenWrt 发布版 SDK 的 feeds/base 以分支语法声明(;v24.10.8),
+          # 解压后该仓库处于 detached HEAD;一旦 feeds 缓存命中,
+          # scripts/feeds 会对其执行 `git pull --ff-only`,在 detached HEAD
+          # 下必然报 "You are not currently on a branch" 并使整个
+          # update -a 以 exit code 1 中断(缓存未命中时是全新 clone,
+          # 反而不会触发 pull,这也是该问题此前未暴露的原因)。
+          # 先移除该目录,让脚本改走 init_branch 重新 clone,
+          # 保证其余 feed 的更新逻辑不受影响。
+          rm -rf feeds/base
           ./scripts/feeds update -a
 
       - name: 保存 feeds 缓存
