@@ -83,10 +83,17 @@ function flt(value, fallback) {
 	return isNaN(n) ? fallback : n;
 }
 
-/* 状态里的 m℃ 字段: -1 表示无有效读数，不能当成 0 ℃ */
-function mcToC(mc) {
-	var n = num(mc, -1);
-	return n > 0 ? n / 1000 : null;
+/* 原始读数：即使越界（本机 CPU 上报负值）也必须如实显示，
+   由 _valid 字段决定是否参与温控仲裁 */
+function rawC(st, key) {
+	var n = num(st[key + '_mc'], -1);
+	if (n === -1 || n === -9223372036854775808)
+		return null;
+	return n / 1000;
+}
+
+function sourceValid(st, key) {
+	return st[key + '_valid'] === '1';
 }
 
 function agoText(seconds) {
@@ -300,7 +307,13 @@ function trendChart(history) {
  * 因此能跟随 openwrt21 的深/浅色开关)，并保留 prefers-color-scheme 作为回退。
  */
 var CSS = String('') +
+	/* 整页显式钉在 z-index:0 的独立层叠上下文里：主题导航是
+	   position:sticky z-index:40（移动端遮罩 60、展开时 header 70），
+	   若不建立受控上下文，卡片上的滤镜合成层可能盖住导航。
+	   同理这里不使用 backdrop-filter：它会创建合成层，且在路由器 GPU
+	   上是纯开销，只保留半透明底色。 */
 	'.ap-root{--ap-radius:16px;--ap-gap:14px;' +
+	'position:relative;z-index:0;isolation:isolate;' +
 	'--ap-bg:rgba(255,255,255,.82);--ap-bg-soft:rgba(248,250,252,.72);' +
 	'--ap-border:rgba(203,213,225,.72);--ap-border-strong:rgba(148,163,184,.5);' +
 	'--ap-text:#0f172a;--ap-text-muted:#475569;--ap-text-dim:#94a3b8;' +
@@ -328,7 +341,6 @@ var CSS = String('') +
 	'.ap-header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;' +
 	'padding:14px 18px;margin-bottom:14px;border:1px solid var(--ap-border);' +
 	'border-radius:var(--ap-radius);background:var(--ap-bg);' +
-	'-webkit-backdrop-filter:blur(14px) saturate(160%);backdrop-filter:blur(14px) saturate(160%);' +
 	'box-shadow:var(--ap-shadow);}\n' +
 	'.ap-header-mark{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;' +
 	'justify-content:center;color:var(--ap-accent);background:var(--ap-accent-soft);' +
@@ -366,7 +378,6 @@ var CSS = String('') +
 	'.ap-grid{display:grid;gap:var(--ap-gap);grid-template-columns:repeat(12,1fr);}\n' +
 	'.ap-card{grid-column:span 12;border:1px solid var(--ap-border);border-radius:var(--ap-radius);' +
 	'background:var(--ap-bg);box-shadow:var(--ap-shadow);overflow:hidden;' +
-	'-webkit-backdrop-filter:blur(14px) saturate(160%);backdrop-filter:blur(14px) saturate(160%);' +
 	'margin-bottom:var(--ap-gap);}\n' +
 	'.ap-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;' +
 	'padding:12px 16px;border-bottom:1px solid var(--ap-border);}\n' +
@@ -1164,7 +1175,8 @@ return view.extend({
 	buildSensors: function() {
 		var head = E('tr', {}, [
 			E('th', {}, _('来源')),
-			E('th', {}, _('实测值')),
+			E('th', {}, _('原始读数')),
+			E('th', {}, _('参与仲裁')),
 			E('th', {}, _('时效')),
 			E('th', {}, _('状态'))
 		]);
@@ -1453,23 +1465,33 @@ return view.extend({
 			return;
 
 		var chips = [];
-		['cpu', 'phy', 'wifi', 'modem'].forEach(function(key) {
-			var c = mcToC(st[key + '_mc']);
-			if (c == null && st[key + '_age'] === '-1' && !st[key + '_err'])
+		/* CPU 与 Wi-Fi 射频必须显示，哪怕本机读数越界；其余来源有节点才列 */
+		['cpu', 'wifi', 'phy', 'modem'].forEach(function(key) {
+			var raw = rawC(st, key),
+				valid = sourceValid(st, key);
+			if (raw === null && (key === 'phy' || key === 'modem'))
 				return;
-			chips.push(statChip(
-				_(SOURCE_LABEL[key]),
-				c == null ? '—' : c.toFixed(1) + ' ℃',
-				c == null ? 'idle' : toneForCelsius(c, warn, hot)));
+
+			if (raw === null) {
+				chips.push(statChip(_('%s（无节点）').format(_(SOURCE_LABEL[key])), '—', 'idle'));
+				return;
+			}
+			if (!valid) {
+				chips.push(statChip(
+					_('%s（读数异常）').format(_(SOURCE_LABEL[key])),
+					raw.toFixed(1) + ' ℃',
+					'warning'));
+				return;
+			}
+			chips.push(statChip(_(SOURCE_LABEL[key]), raw.toFixed(1) + ' ℃',
+				toneForCelsius(raw, warn, hot)));
 		});
-		if (!chips.length)
-			chips.push(statChip(_('温度'), _('无有效读数'), 'danger'));
 
 		dom.content(host, chips);
 		if (this.refs.tempMeta)
 			this.refs.tempMeta.textContent = st.temp_source
-				? _('热源: %s').format(_(SOURCE_LABEL[st.temp_source] || st.temp_source))
-				: _('暂无热源');
+				? _('控制基准: %s').format(_(SOURCE_LABEL[st.temp_source] || st.temp_source))
+				: _('暂无有效热源');
 	},
 
 	paintPolicy: function(st) {
@@ -1578,26 +1600,30 @@ return view.extend({
 			return;
 
 		var paths = {
-			cpu: '/sys/class/thermal/thermal_zone*/temp',
-			phy: '/sys/class/hwmon/*/temp1_input',
-			wifi: 'iwpriv <iface> stat',
+			cpu: '/sys/class/thermal/thermal_zone*/temp + cpu_thermal hwmon',
+			phy: '非射频非风扇的 hwmon temp1_input (如 mdio_bus)',
+			wifi: 'mt79xx hwmon temp1_input，回退 iwpriv <iface> stat',
 			modem: 'ubus call modem_ctrl info'
 		};
-		var trs = ['cpu', 'phy', 'wifi', 'modem'].map(function(key) {
-			var c = mcToC(st[key + '_mc']),
+		/* 四路来源一律列出：CPU 与 Wi-Fi 即使读数越界也必须显示原始值 */
+		var trs = ['cpu', 'wifi', 'phy', 'modem'].map(function(key) {
+			var raw = rawC(st, key),
+				valid = sourceValid(st, key),
 				age = num(st[key + '_age'], -1),
-				err = st[key + '_err'] || '',
-				state = c == null ? (err || _('无有效读数'))
-				: (age < 0 ? _('未知时效') : _('正常'));
+				err = st[key + '_err'] || '';
 			return E('tr', {}, [
 				E('td', {}, [
 					E('strong', {}, _(SOURCE_LABEL[key])),
 					E('div', {}, E('code', {}, paths[key]))
 				]),
-				E('td', { 'class': 'num' }, c == null ? '—' : c.toFixed(1) + ' ℃'),
-				E('td', {}, c == null ? pill(state, 'muted') : pill(agoText(age), age > num(st.slow_interval, 30) * 2 ? 'warning' : 'good')),
+				E('td', { 'class': 'num' }, raw === null ? '—' : raw.toFixed(1) + ' ℃'),
+				E('td', {}, valid ? pill(_('是'), 'good') : pill(_('否'), 'warning')),
+				E('td', {}, raw === null
+					? pill(err || _('无节点'), 'muted')
+					: pill(agoText(age), age > num(st.slow_interval, 30) * 2 ? 'warning' : 'good')),
 				E('td', {}, [
-					c == null ? pill(err ? _('不可用') : _('无数据'), 'danger') : pill(_('有效'), 'good'),
+					raw === null ? pill(_('不可用'), 'danger')
+					: (valid ? pill(_('正常'), 'good') : pill(_('读数越界，已忽略'), 'warning')),
 					err ? E('div', { 'style': 'font-size:11.5px;color:var(--ap-text-dim);margin-top:4px' }, err) : ''
 				])
 			]);
@@ -1606,11 +1632,11 @@ return view.extend({
 
 		if (this.refs.samplingState) {
 			dom.content(this.refs.samplingState, rows([
-				[_('主控温度'), st.temp_source ? _(SOURCE_LABEL[st.temp_source]) : _('无'), 'info'],
+				[_('控制基准'), st.temp_source ? _(SOURCE_LABEL[st.temp_source]) : _('无'), 'info'],
+				[_('仲裁规则'), _('取所有有效来源的最大值'), 'muted'],
 				[_('快采周期'), (st.interval || '—') + ' s', 'muted'],
 				[_('外部命令周期'), (st.slow_interval || '—') + ' s', 'muted'],
-				[_('热源判定'), _('取所有有效来源的最大值'), 'muted'],
-				[_('无转速反馈'), _('该硬件不提供 tach 输入'), 'muted']
+				[_('无转速反馈'), _('该硬件不提供 tach 输入，只回读占空比'), 'muted']
 			]));
 		}
 	},
