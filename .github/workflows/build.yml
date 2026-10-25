@@ -128,12 +128,17 @@ jobs:
           key: feeds-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.bucket.outputs.week }}
 
       - name: 更新 feeds
+        if: steps.cache-feeds.outputs.cache-hit != 'true'
         working-directory: sdk
         run: |
           set -euo pipefail
-          # 全量更新:本项目依赖 luci-base（来自 feeds/luci），
-          # 选择性 update 在某些 SDK（如 ImmortalWrt）下会漏掉依赖导致后续
-          # package/luci-app-airpi-fancontrol/compile 以 exit code 2 静默失败。
+          # feeds.conf 中的 base feed 以 tag 指定(如 ;v24.10.8)，scripts/feeds
+          # 用 `git clone --branch <tag>` 检出后 HEAD 处于 detached 状态，随后
+          # 的 `git pull --ff-only` 报 "You are not currently on a branch"，
+          # 整个作业在「更新 feeds」这一步直接失败。缓存恢复后的 feeds 内容由
+          # 固定 tag/commit 决定、不会变化，因此精确命中缓存时跳过更新；未命中
+          # (含 restore-keys 回退到上一周)时先删掉旧 base，让它重新克隆。
+          rm -rf feeds/base
           ./scripts/feeds update -a
 
       - name: 保存 feeds 缓存
