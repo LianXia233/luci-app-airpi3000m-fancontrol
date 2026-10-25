@@ -5,6 +5,15 @@
 # luci-app-airpi-fancontrol
 #   Fan control web UI for the AirPi AP3000M (MediaTek MT7981B / filogic).
 #
+# v7.0.1: frontend rendering fixes only (no backend change).
+#   - SVG nodes were created in the HTML namespace, so the trend chart, the
+#     curve preview and the topology drew nothing at all
+#   - the poll loop could kill itself (single detach check) or freeze
+#     (inflight never cleared on an exception); both now recover and the
+#     error is surfaced in the UI instead of being swallowed
+#   - the overview moved from a two column split to a 12 column grid, which
+#     removes the dead area the split layout left under the fan card
+#
 # v7.0.0: backend and frontend deep refactor.
 #   - the daemon no longer exits in manual/stepless modes; it keeps sampling,
 #     keeps reporting and keeps the thermal guard armed in every mode
@@ -34,7 +43,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-airpi-fancontrol
-PKG_VERSION:=7.0.0
+PKG_VERSION:=7.0.1
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community

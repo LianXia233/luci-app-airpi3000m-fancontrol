@@ -54,13 +54,24 @@
   原因是两处只在 Linux 目标参与编译的 `#[cfg(unix)]` 类型错误（`format` 缺 `!`、
   `UnixDatagram::send` 需 `&[u8]`）。已在 7.0.0 提交内修复，并把
   `cargo check --target aarch64-unknown-linux-musl` 加入本地常规步骤
-- `v7.0.0` 标签第二次 CI：`ipk (OpenWrt 24.10.8)` 目标在 **步骤 12「更新 feeds」**
-  （`./scripts/feeds update -a`）失败，属上游/网络侧而非本仓库代码；
-  另两个目标与发布作业随后被取消
-- 结论：**`v7.0.0` 未发布任何 Release**（`gh release view v7.0.0` → release not found）。
-  7.0.1 将作为首个对外发布版本
-- 设备侧当前运行的是逐文件替换安装的新版本（内容与 `main` 一致，实机回归见 7.0.0 条目验证表）；
-  `.apk` 经包管理器安装/升级/卸载的路径**仍未验证**
+- `v7.0.0` 标签第二次 CI：`ipk (OpenWrt 24.10.8)` **构建成功**，
+  `apk (25.12)` 与 `immortalwrt-master` 两个目标失败在 **步骤「编译 luci-app-airpi-fancontrol」**——
+  但失败的并不是本包，而是它的依赖 `luci-base → lucihttp`：lucihttp 的 lua 变体在
+  lua 头文件尚未 staged 时就被 CMake 探测到并构建，报 `#include <lua.h>` 找不到：
+  ```
+  [3/6] Building C object CMakeFiles/liblucihttp-lua.dir/lib/lua.c.o
+  FAILED: ... #include <lua.h> → compilation terminated
+  ERROR: package/feeds/luci/lucihttp failed to build.
+  ```
+  两个失败目标的报错完全一致，属 SDK/feeds 侧的依赖顺序问题，与本仓库代码无关
+- 该次运行的发布作业仍判为成功，于是产出了一个**只含 24.10 ipk** 的 Release
+  （`v20261025115015`，含 `luci-app-airpi-fancontrol_7.0.0-r1_..._openwrt-24.10.ipk`
+  与配套 kmod）。AP3000M 实机为 apk 系统，该产物无法直接安装
+- **本次修复**：CI 在 `.config` 中显式选中 `CONFIG_PACKAGE_lua` / `CONFIG_PACKAGE_liblua`，
+  并在编译本包前增加「预编译 lua 依赖」步骤，让 lua 的头文件先落到 staging_dir；
+  预编译失败只告警不中断，最终判定仍由本包编译步骤给出
+- 结论：**7.0.1 为首个期望覆盖三个目标的发布版本**；`v7.0.0` 未产出可用于实机的产物。
+  `.apk` 经包管理器安装/升级/卸载的路径仍未验证
 
 ## [7.0.0] - 2026-10-25
 

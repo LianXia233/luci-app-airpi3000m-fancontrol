@@ -362,8 +362,8 @@ cat /sys/kernel/duty_cycle          # 读取当前占空比
 仓库已配置多环境流水线，推送标签即可触发构建：
 
 ```sh
-git tag v7.0.0
-git push origin v7.0.0
+git tag v7.0.1
+git push origin v7.0.1
 
 ```
 
