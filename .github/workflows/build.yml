@@ -174,9 +174,17 @@ jobs:
           # .config 被重复追加导致配置冲突(这是静默编译 exit code 2 的常见诱因)。
           sed -i '/CONFIG_PACKAGE_luci-app-airpi-fancontrol/d' .config
           sed -i '/CONFIG_PACKAGE_kmod-airpi-gpio-fan/d' .config
+          sed -i '/CONFIG_PACKAGE_lua=/d' .config
+          sed -i '/CONFIG_PACKAGE_liblua=/d' .config
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_luci-app-airpi-fancontrol=m
           CONFIG_PACKAGE_kmod-airpi-gpio-fan=m
+          # OpenWrt 25.12 与 ImmortalWrt master 上，lucihttp 的 lua 变体会在
+          # lua 头文件尚未 staged 时就被 CMake 探测到并构建，报
+          # `#include <lua.h>` 找不到而整个目标失败。显式选中 lua/liblua，
+          # 让它在依赖链里先被构建出来。
+          CONFIG_PACKAGE_lua=m
+          CONFIG_PACKAGE_liblua=m
           EOF
           make defconfig
           echo "----- 生效的相关配置 -----"
@@ -186,6 +194,27 @@ jobs:
       # 把真实错误（依赖缺失/编译报错）打到日志,避免只看到 "exit code 2"。
       # 注意:include/verbose.mk 以 "V 值是否含 s" 判断详细输出,
       # 因此 V=sc 仍会触发详细输出,不能作为静默开关。
+      # 先把 lua 单独编出来：lucihttp 的 lua 变体依赖其头文件被 staged，
+      # 而 feeds 里的依赖声明在 25.12 / master 上不足以排好这个顺序。
+      # 预编译失败不直接终止作业——真正的判定在下一步。
+      - name: 预编译 lua 依赖
+        working-directory: sdk
+        run: |
+          set -uo pipefail
+          built=0
+          for p in package/feeds/packages/lua package/libs/lua; do
+            if [ -d "$p" ]; then
+              echo "尝试预编译 $p"
+              if make "$p"/compile -j"$(nproc)"; then
+                echo "已预编译 $p"
+                built=1
+                break
+              fi
+              echo "::warning::$p 预编译失败，继续正常构建流程"
+            fi
+          done
+          [ "$built" = 1 ] || echo "::notice::未找到可预编译的 lua 包目录"
+
       - name: 编译 luci-app-airpi-fancontrol
         working-directory: sdk
         run: |
