@@ -26,11 +26,12 @@
 ## 📌 核心特性
 
 - 🧠 **闪存驱动自适应识别**：根据 eMMC 容量自动决策驱动链路（`16GB` $\rightarrow$ 软 PWM；`8GB` $\rightarrow$ 硬件 PWM），亦支持 WebUI 手动强制切换。
-- 🦀 **Rust 高性能温控守护**：底层由原生静态链接的 Rust 二进制程序 `airpi-fanctl` 驱动，零三方依赖、musl 静态链接，内存占用极低且安全可靠。
-- 🌡️ **多源温度动态仲裁**：并行轮询采集 **CPU / Wi-Fi 芯片 / 物理层 PHY / 5G 蜂窝模组** 四路温度，以最高温区实时驱动风扇转速，异常值自动过滤回退。
-- 🎛️ **丰富调速档位**：支持静音 (25%)、低速 (50%)、常规 (75%)、狂暴 (100%) 四档快捷预设、0~255 无极平滑滑块调速及阶梯智能温控。
-- 🎨 **三列卡片式状态面板**：动态高亮最高温源，实时呈现驱动工作状态、eMMC 闪存信息与模拟 RPM 估算曲线。
-- 🧩 **单页一体化界面 (v6.0.0+)**：状态座舱、硬件拓扑看板、实时 PWM 示波器与驱动参数表单全部合并在「状态 → 风扇控制」一页内，不再存在独立的「风扇设置」子菜单。
+- 🦀 **Rust 高性能温控守护**：底层由原生静态链接的 Rust 二进制程序 `airpi-fanctl` 驱动，零三方依赖、musl 静态链接，内存占用极低且安全可靠。守护进程在**任何模式(含手动/无级)下常驻**，持续采样、持续上报、持续待命守护。
+- 🌡️ **多源温度动态仲裁**：采集 **CPU / Wi-Fi 芯片 / 物理层 PHY / 5G 蜂窝模组** 四路温度，以最高温区实时驱动风扇占空比；Wi-Fi 与模组两路需要外部命令，按独立低频周期采样，其余时间沿用上次读数。
+- 📈 **温控曲线可配置**：`85/60/50 → 255/192/128/64` 阶梯的全部阈值与占空比、控制周期、降档迟滞、最小保持时间均已开放为 UCI 选项，出厂默认值与旧版硬编码逐位一致。
+- 🛡️ **三层散热保底**：传感器连续失效按 `fail_duty` 兜底（默认满速）；手动/无级档位超过 `temp_crit` 时被温控守护临时接管；服务停止时接口保留 `stop_duty` 而非归零停转。
+- 🎛️ **丰富调速档位**：支持静音 (25%)、巡航 (50%)、强冷 (75%)、全速 (100%) 四档快捷预设与 0~255 无级调速，设定值与接口实测回读并列显示。
+- 🧭 **五标签页界面 (v7.0.0+)**：运行概览 / 风扇控制 / 温控策略 / 传感器与监控 / 高级设置，切换不重建表单、不触碰硬件；深浅色主题跟随 LuCI 实际配色，移动端单列自适应。
 - ⚡ **现代 LuCI 架构 (v4.0+)**：基于 Client-Side JavaScript 现代视图架构，彻底剥离过时的 `luci-compat`，无缝兼容 OpenWrt 24.10、25.12 与 ImmortalWrt master 分支。
 
 ---
@@ -111,16 +112,20 @@ graph TD
 
 ## 🌡️ 智能温控曲线与多源仲裁
 
-温控守护进程默认每 **8 秒** 轮询一次全部温度源，**自动选取其中的最高温源作为调速基准**：
+温控守护进程默认每 **8 秒**（`auto_interval`，可调 2–300 秒）采样一次全部温度源，
+**自动选取其中的最高温区作为调速基准**；阈值与占空比均为 UCI 可配置项，下表为出厂默认：
 
 ### 1. 温控调速阶梯
 
-| 触发条件（最高温度 $T$） | 占空比 | 输出比例 | 标称转速状态 |
+| 触发条件（最高温度 $T$） | 占空比 | 输出比例 | 档位名称 |
 | --- | --- | --- | --- |
-| $T > 85^\circ\text{C}$ | `255 / 255` | 100% | 狂暴全速 |
-| $60^\circ\text{C} < T \le 85^\circ\text{C}$ | `192 / 255` | 75% | 常规加速 |
-| $50^\circ\text{C} < T \le 60^\circ\text{C}$ | `128 / 255` | 50% | 低速运转 |
-| $T \le 50^\circ\text{C}$ | `64 / 255` | 25% | 静音巡航 |
+| $T > 85^\circ\text{C}$ | `255 / 255` | 100% | 全速 |
+| $60^\circ\text{C} < T \le 85^\circ\text{C}$ | `192 / 255` | 75% | 强冷 |
+| $50^\circ\text{C} < T \le 60^\circ\text{C}$ | `128 / 255` | 50% | 巡航 |
+| $T \le 50^\circ\text{C}$ | `64 / 255` | 25% | 静音 |
+
+升档立即生效；降档需同时满足**迟滞条件**（温度低于阈值减去 `hysteresis`）与**最小保持时间**
+（距上次调整不少于 `min_hold` 秒），用以抑制风扇在阈值附近来回抖动。
 
 ### 2. 四路温度探测机制
 
@@ -132,56 +137,133 @@ graph TD
 | **5G 模组** | `ubus call modem_ctrl info` 提取 `temperature` 字段 | 数值 $< 1000$ 视为摄氏度换算，否则按毫摄氏度换算 |
 
 > [!NOTE]
-> 界面显示的 RPM 为占空比线性换算值（$\text{RPM} = \text{Duty} \times 10$）。由于 AP3000M 硬件未引出风扇 Hall 测速引脚，无法直接回读物理转速。
+> AP3000M 未引出风扇 Hall 测速（tach）引脚，**风扇物理转速无法回读**。界面因此不提供 RPM / dBA / CFM 这类换算值，
+> 只并列展示两项真实数据：你设定的目标占空比，以及从 `/sys/kernel/duty_cycle` 或 `pwm-fan` 的 `pwm1`
+> 实际读回当前档位；两者不一致时按接口异常告警。
+
+---
+
+## 🖥️ 界面分区（v7.0.0 标签页）
+
+页面入口不变：**状态 → 风扇控制**（`admin/status/airpi-fancontrol`），内部改为五个标签页，
+当前页记录在 URL hash（如 `#curve`），刷新或分享链接可直接回到同一页。
+
+| 标签页 | 内容 | 数据来源 |
+| --- | --- | --- |
+| **运行概览** | 风扇转子动画（周期由真实占空比驱动）、设定占空比与接口实测回读、控制链路状态、生效曲线与档位、温度来源、告警自检、温度/占空比趋势图 | `snapshot`，5 秒轮询 |
+| **风扇控制** | 智能温控、四档固定预设、无级滑块（拖动只改预览，需显式应用）、退出自动模式的确认对话框 | `set` / `auto` / `stepless` |
+| **温控策略** | 三段阈值与四档占空比、控制周期、降档迟滞、最小保持；随编辑实时绘制阶梯曲线并对非法顺序给出阻止提示 | UCI `airpi-fan` |
+| **传感器与监控** | 四路来源的实测值、采样时效、不可用原因与接口路径；来源开关与外部命令采样周期；明确标注本硬件无 tach 反馈 | `snapshot` + UCI |
+| **高级设置** | 驱动选择 / GPIO / 周期、安全兜底参数、日志级别与日志尾部读取、硬件拓扑探测、服务状态与配置重载、配置导入导出与恢复出厂 | `hwdetect` / `logs` / `reload` + UCI |
+
+交互与性能要点：
+
+- 标签页切换只做显隐，**不重建表单、不下发任何控制命令、不重发硬件探测**；未保存的编辑内容在切换后保留。
+- 全页只有 **一个** 轮询回调，容器离开文档时自行注销；浏览器后台标签不发起请求。
+- 硬件探测（`hwdetect`）只在高级设置页可见时按需刷新，日志只在进入该页或点击刷新时读取。
+- 每次刷新对设备只有 **1 次** 进程派生（`snapshot` 命中状态文件时无需再调用 `uci`/`iwpriv`/`ubus`）。
+- 深浅色由渲染时页面实际背景亮度判定，并同时提供 `prefers-color-scheme` 回退；
+  动画遵循 `prefers-reduced-motion`，移动端 ≤640px 自动单列、标签页按钮整行可点。
 
 ---
 
 ## 🦀 Rust 温控守护进程 (`airpi-fanctl`)
 
-自 v5.0.0 起，核心温控调度由 Rust 编写的独立程序 `/usr/bin/airpi-fanctl` 承载：
-
-### 命令行子指令参考
+自 v5.0.0 起，核心温控调度由 Rust 编写的独立程序 `/usr/bin/airpi-fanctl` 承载。v7.0.0 重构后的子命令全貌：
 
 ```sh
-airpi-fanctl daemon              # 启动温控守护前台主循环（交由 procd 托管）
-airpi-fanctl status              # 查看转速、档位码、生效驱动与运行状态
+airpi-fanctl daemon              # 温控守护前台主循环（交由 procd 托管，任何模式都常驻不退出）
+airpi-fanctl snapshot            # 一次读出整页所需状态（优先回读 /tmp/airpi-fan.state，零额外派生进程）
+airpi-fanctl status              # 查看转速、档位码、生效驱动与运行状态（mode= 为机器可读码，mode_cn= 保留中文）
 airpi-fanctl temp                # 输出最高温度与对应来源标识
 airpi-fanctl temps               # 列出当前所有可用的温度源键值
-airpi-fanctl set <0-255> <0-3>   # 停止守护并固定转速与档位
-airpi-fanctl auto                # 切回智能温控（写入档位码 9 并重启守护）
-airpi-fanctl stepless <0-255>    # 无极自定义调速（写入档位码 999）
+airpi-fanctl legacy-temp <opt>   # 兼容 get_sys_temp.sh 的旧输出格式（-a/-c/-s）
+airpi-fanctl set <0-255> <0-3>   # 固定档位：写模式与占空比，服务缺席时补 start（不再 stop 服务）
+airpi-fanctl auto                # 切回智能温控：写档位码 9，运行中的守护进程下一轮生效，不重启服务
+airpi-fanctl stepless <0-255>    # 无级调速：写档位码 999 与目标占空比
 airpi-fanctl hwdetect            # 打印 eMMC 大小、软硬件驱动与 PWM 路径检测全貌
+airpi-fanctl logs [n]            # 读取 /tmp/airpi-fancontrol.log 尾部 n 行（默认 80）
+airpi-fanctl reload              # 配置重载提示：运行中无需重启，未运行时拉起服务
 
 ```
+
+### 守护进程状态快照
+
+`airpi-fanctl snapshot`（以及其来源 `/tmp/airpi-fan.state`）输出的关键字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `mode` / `mode_code` | `auto`/`manual`/`stepless` 与对应 `/etc/fanvall` 档位码 |
+| `duty` / `duty_sysfs` / `duty_source` | 目标占空比、接口实测回读、回读来源（`written`/`sysfs`/`unknown`） |
+| `temp` / `temp_mc` / `temp_source` / `band` | 主控温度、毫摄氏度原值、热源、当前曲线档位 |
+| `cpu_mc` `phy_mc` `wifi_mc` `modem_mc` + `_age` `_err` | 逐来源读数、采样时效与不可用原因（`-1` 表示无有效读数，绝不当作 0 ℃） |
+| `alarm` / `alarm_msg` / `guarded` / `misses` | 告警类别（`none`/`sensor`/`thermal`/`config`/`interface`）、说明、守护接管状态、连续失效次数 |
+| `policy` / `interval` / `hysteresis` / `min_hold` / `crit_guard` / `fail_duty` | 当前生效的曲线与控制/保底参数 |
+| `config_errors` | 被拒绝的配置项及回退说明（不静默采用默认值） |
 
 ### 档位控制状态码（写入 `/etc/fanvall`）
 
 | 档位码 | 工作模式 | 行为描述 |
 | --- | --- | --- |
-| `0` / `1` / `2` / `3` | 固定档位 | 对应占空比 `64` / `128` / `192` / `255`（静音 / 低速 / 常规 / 狂暴） |
-| `9` | 智能温控 | 守护进程接管，根据温度曲线每 8 秒自动调速 |
-| `999` | 无极调速 | 按用户在界面指定的任意占空比维持运行 |
+| `0` / `1` / `2` / `3` | 固定档位 | 对应占空比 `64` / `128` / `192` / `255`（静音 / 巡航 / 强冷 / 全速） |
+| `9` | 智能温控 | 守护进程按温度曲线自动调速 |
+| `999` | 无级调速 | 维持用户指定的任意占空比；守护进程常驻但**不覆盖**该值 |
+
+> [!IMPORTANT]
+> v7.0.0 起，手动与无级模式**不再停止温控服务**。旧版会先 `/etc/init.d/airpi-fancontrol stop`
+> （软 PWM 因此被写 0 停转）再写目标值，且守护进程遇到固定档位会写完一次即退出，被 procd 反复拉起直至放弃。
+> 现在守护进程在所有模式下常驻：策略上尊重用户档位，同时保留采样、上报与临界温度接管能力。
 
 ---
 
 ## ⚙️ 配置文件与服务控制
 
-UCI 配置文件位于 `/etc/config/airpi-fan`（升级插件保留）：
+UCI 配置文件位于 `/etc/config/airpi-fan`（列为 `conffiles`，升级插件时保留用户改动）：
 
 ```uci
 config fan 'settings'
     option fan_driver 'auto'      # auto (自动) | softpwm (软PWM) | pwm (硬PWM)
     option fan_gpio   '540'       # 软 PWM 使用的 GPIO 编号
-    option fan_freq   '15000'     # 模拟周期 (微秒 μs)
+    option fan_freq   '15000'     # 模拟周期 (微秒 μs)，保存后热更新内核参数
 
+    # 温控曲线：阈值必须严格递增，占空比必须随温度单调不降
+    option temp_high '85'   option duty_high '255'
+    option temp_mid  '60'   option duty_mid  '192'
+    option temp_low  '50'   option duty_low  '128'
+    option duty_idle '64'
+
+    # 控制周期与平滑
+    option auto_interval '8'      # 秒，2..300
+    option hysteresis    '2'      # ℃，降档迟滞，0..15
+    option min_hold      '30'     # 秒，两次降档最小间隔（升温不受限）
+
+    # 安全保底
+    option temp_crit '95'         # 超过即由守护接管为满速
+    option crit_guard '1'         # 手动/无级模式是否允许接管
+    option fail_duty '255'        # 连续取不到有效温度时的兜底档位
+    option fail_count '3'         # 判定失效所需的连续轮数
+    option stop_duty '64'         # 服务停止后留在接口上的保底占空比
+
+    # 来源与采样频率
+    option src_cpu '1'  option src_phy '1'  option src_wifi '1'  option src_modem '1'
+    option slow_interval '30'     # iwpriv / ubus 低频采样周期（秒）
+
+    # 诊断：0=关闭 1=仅错误 2=信息 3=调试
+    option log_level '2'
 ```
+
+> [!NOTE]
+> 从 6.x 升级上来的设备配置文件里没有这些新选项，守护进程会按上表默认值补齐，**默认行为与旧版逐位一致**；
+> 想启用新曲线只需在网页对应标签页改并保存。配置项若越界或顺序非法，守护进程保留原值、回退到出厂阶梯，
+> 并把原因写进 `config_errors` 在概览页告警 —— 不会静默用假默认值掩盖故障。
 
 ### 服务管理命令
 
 ```sh
 /etc/init.d/airpi-fancontrol start    # 启动守护进程
-/etc/init.d/airpi-fancontrol stop     # 停止服务 (硬 PWM 回退至 64；软 PWM 归零停转)
+/etc/init.d/airpi-fancontrol stop     # 停止服务，接口保留 stop_duty（默认 64）而非归零停转
 /etc/init.d/airpi-fancontrol restart  # 重载配置并重启
+/etc/init.d/airpi-fancontrol reload   # 保存配置后无需重启：运行中的守护进程下一轮自读
 /etc/init.d/airpi-fancontrol enable   # 设置开机自启
 
 ```
@@ -250,12 +332,26 @@ cat /sys/kernel/duty_cycle          # 读取当前占空比
 仓库已配置多环境流水线，推送标签即可触发构建：
 
 ```sh
-git tag v5.0.0
-git push origin v5.0.0
+git tag v7.0.0
+git push origin v7.0.0
 
 ```
 
 CI 将针对 **OpenWrt 24.10.x**、**OpenWrt 25.12.x** 以及 **ImmortalWrt master 快照** 同时发起矩阵构建。
+
+### 本地开发校验
+
+```sh
+# 后端：单元测试与静态检查（宿主机即可跑，纯函数不依赖 /sys）
+cd luci-app-airpi-fancontrol/src && cargo test && cargo clippy --all-targets
+
+# 前端：语法检查（需 node）
+node --check luci-app-airpi-fancontrol/htdocs/luci-static/resources/view/airpi-fancontrol/fancontrol.js
+
+# 实机只读探测（不改任何设备状态）
+sh tools/airpi-probe.sh                # 在设备上直接执行
+ssh root@192.168.10.1 'sh -s' < tools/airpi-probe.sh   # 经 SSH 管道执行
+```
 
 ### 2. 本地 SDK 编译
 
@@ -293,17 +389,21 @@ make package/airpi-gpio-fan/compile V=s
 │       ├── Makefile                   # Kbuild 定义
 │       └── airpi-gpio-fan.c           # 驱动核心源码
 ├── luci-app-airpi-fancontrol/         # LuCI 现代前端与后端
-│   ├── Makefile                       # OpenWrt package 构建规则
+│   ├── Makefile                       # OpenWrt package 构建规则（v7.0.0）
 │   ├── src/                           # Rust 守护进程工程
 │   │   ├── Cargo.toml                 # 零三方依赖 Cargo 配置
 │   │   ├── Cargo.lock
-│   │   └── src/main.rs                # airpi-fanctl 调度与多温区探测
+│   │   └── src/main.rs                # 采样→策略→执行→上报四段式主循环 + 19 项单元测试
 │   ├── htdocs/luci-static/resources/view/airpi-fancontrol/
-│   │   └── fancontrol.js              # 单页视图：状态座舱 + 硬件总线与驱动设置（v6.0.0 起合并）
+│   │   └── fancontrol.js              # 五标签页视图（概览/控制/策略/传感器/高级）
 │   └── files/                         # 系统运行资产
-│       ├── etc/config/airpi-fan       # 默认 UCI 配置
-│       ├── etc/init.d/airpi-fancontrol# procd 启动脚本
-│       └── usr/bin/airpi-fanctl.sh    # rpcd/LuCI 桥接入口脚本
+│       ├── etc/config/airpi-fan       # 默认 UCI 配置（含曲线、迟滞、安全保底、来源开关）
+│       ├── etc/init.d/airpi-fancontrol# procd 启动脚本（停止保留 stop_duty，reload 不中断散热）
+│       ├── usr/bin/airpi-fanctl.sh    # rpcd/LuCI 桥接入口脚本
+│       ├── usr/bin/get_sys_temp.sh    # 旧温度脚本兼容包装
+│       └── usr/share/{luci/menu.d,rpcd/acl.d}/  # 菜单注册与最小权限 ACL
+├── tools/
+│   └── airpi-probe.sh                 # 实机只读探测脚本（13 段，不改任何设备状态）
 ├── docs/                              # 界面预览资源
 ├── CHANGELOG.md                       # 版本迭代历史
 └── LICENSE                            # GPL-2.0 开源授权

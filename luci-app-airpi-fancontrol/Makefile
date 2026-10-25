@@ -5,6 +5,16 @@
 # luci-app-airpi-fancontrol
 #   Fan control web UI for the AirPi AP3000M (MediaTek MT7981B / filogic).
 #
+# v7.0.0: backend and frontend deep refactor.
+#   - the daemon no longer exits in manual/stepless modes; it keeps sampling,
+#     keeps reporting and keeps the thermal guard armed in every mode
+#   - the temperature curve, hysteresis, fail-safe and log level became UCI
+#     options (defaults reproduce the previous hard-coded ladder)
+#   - a single `snapshot` subcommand replaces the three-per-refresh RPC pattern
+#   - /etc/init.d stop leaves the fan at stop_duty instead of 0
+#   - the LuCI page is reorganised into five tabs and no longer shows
+#     fabricated RPM / dBA / CFM values the hardware cannot report
+#
 # v6.0.0: the settings view was merged into the status page. There is now a
 # single menu entry (admin/status/airpi-fancontrol) and settings.js no longer
 # exists; upgrades remove the stale file from the device (see postinst).
@@ -24,7 +34,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-airpi-fancontrol
-PKG_VERSION:=6.0.0
+PKG_VERSION:=7.0.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community

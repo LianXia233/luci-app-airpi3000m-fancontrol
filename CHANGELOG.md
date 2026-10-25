@@ -2,6 +2,96 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [7.0.0] - 2026-10-25
+
+> [!IMPORTANT]
+> 本次为后端控制链路与前端界面的同步深度重构。核心目标有三:温控行为可配置且不因页面开关而中断、
+> 界面不再出现硬件给不出的推算值、以及把"控制程序退出 = 停止散热"的默认行为改成正向保底。
+> 所有既有子命令、UCI 段类型/段名、sysfs 路径、menu.d 与 acl.d 结构均保持不变。
+
+### 新增:后端控制链路
+
+- **温控曲线全面可配置**:新增 14 个 UCI 选项,把原先硬编码在守护进程里的 `85/60/50 → 255/192/128/64`
+  阶梯变成 `temp_high|temp_mid|temp_low` + `duty_high|duty_mid|duty_low|duty_idle`,出厂默认值与旧硬编码逐位一致
+- **降档迟滞与最小保持**:`hysteresis`(℃) 决定回落多少才允许降档,`min_hold`(秒) 限制两次降档的最小间隔;
+  **升温与守护接管不受该限制**,平滑处理绝不以牺牲散热响应为代价
+- **传感器失效安全**:`fail_count` 轮取不到任何有效温度后切到 `fail_duty`(默认 255 满速),
+  而不是像旧版那样把"无读数"当成 0 ℃ 而落到最低档
+- **临界温度守护**:`temp_crit` + `crit_guard`,在手动/无级模式下温度越界时临时接管为满速并在界面告警,
+  温度回落后自动交还用户档位
+- **状态快照文件** `/tmp/airpi-fan.state`:守护进程每轮原子写入(临时文件 + rename),
+  新增 `airpi-fanctl snapshot` 子命令直接回读它。前端一次刷新只需要 1 个进程,不再触发 uci/iwpriv/ubus 派生
+- **低频来源缓存**:Wi-Fi(`iwpriv`)与模组(`ubus call modem_ctrl`)按 `slow_interval` 低频采样并沿用上次读数,
+  快采来源(CPU/PHY)每轮必读;四个来源可用 `src_cpu|src_phy|src_wifi|src_modem` 独立停用
+- **日志**:`log_level`(0-3) 输出到 `/tmp/airpi-fancontrol.log`(tmpfs,不磨损 Flash)并转发 `/dev/log`,
+  新增 `airpi-fanctl logs [n]` 读取尾部,避免为看日志再引入一个 rpcd 文件读取授权
+- **软 PWM 参数热更新**:守护进程比对 `/sys/module/airpi_gpio_fan/parameters/{period,fangpio}`,
+  仅周期变化时直接写内核参数(不停风扇);只有引脚变化才 `rmmod` + `insmod`,并在重载后立即补写保底占空比
+- **单一 `uci show` 读取**:配置由每轮 4 次 `uci get` 派生进程改为 1 次 `uci -q show airpi-fan` 解析,
+  非法配置项不再静默采用默认值,而是记入 `config_errors` 并在界面告警
+
+### 新增:前端界面
+
+- **五标签页导航**:运行概览 / 风扇控制 / 温控策略 / 传感器与监控 / 高级设置,
+  切换仅做显隐(不重建表单、不触碰硬件、不重发 RPC),标签页状态记录在 URL hash,刷新后可回到原页
+- **曲线预览 SVG**:温控策略页随表单编辑实时绘制阶梯曲线、阈值刻度与临界线,并对非法顺序给出阻止性提示
+- **温度与占空比趋势图**:数据完全来自真实轮询历史,按快照时间戳去重,不掺任何插值或模拟点
+- **深浅色主题自适应**:渲染时按页面实际背景亮度判定 `data-ap-theme`,并同时提供
+  `prefers-color-scheme` 回退,不再写死浅色变量
+- **配置导入/导出/恢复出厂**:导入只接受本项目已知且范围合法的配置项,非法行逐条列出并跳过
+
+### 变更
+
+- **守护进程不再因手动/无级模式退出**:旧版 `fanvall` 为 0-3 时 `run_daemon()` 写完一次占空比就 `return`,
+  导致 procd 反复拉起直到放弃。现改为常驻运行,持续采样、持续上报、持续待命守护,只在策略上尊重用户档位
+- **手动/无级切换不再停服务**:旧版 `set`/`stepless` 先执行 `/etc/init.d/... stop`(软 PWM 被写 0)再写目标值。
+  现只写模式与占空比,并在服务缺席时补一次 `start`,切换过程风扇驱动信号不中断
+- **`reload` 语义轻量化**:守护进程每轮自读配置,`airpi-fanctl reload` 对运行中的服务不再 restart;
+  `procd_add_reload_trigger` 与 UCI 文件路径保持不变
+- **停止服务保留散热**:`stop_service()` 由 `echo 0 > /sys/kernel/duty_cycle` 改为写入 `stop_duty`(默认 64),
+  该值本就是旧版守护进程的空闲档位,已在实机长期使用
+- **procd 重试策略**:`respawn 3600 1 5` → `respawn 3600 5 0`(不限次数),避免反复崩溃后散热控制被永久放弃
+- **状态协议机器可读化**:`airpi-fanctl status` 的 `mode=` 由中文(`智能`/`手动`/`无极`)改为
+  `auto`/`manual`/`stepless`,原中文值继续以 `mode_cn=` 提供。**这是本项目唯一的对外不兼容点**:
+  若有外部脚本按中文匹配 `mode=`,需改为匹配 `mode=`(机器码)或 `mode_cn=`
+- **界面不再显示推算遥测**:移除"估算转速 / 声学噪声 / 有效风压"三张卡片与档位按钮上的 RPM 标注。
+  AP3000M 无 tach 测速引脚,这些数值是公式产物而非实测;界面改为并列展示**设定占空比**与**接口实测回读**
+- **轮询开销**:旧版每次刷新 4 个 RPC(status/temp/temps/hwdetect)+ 每 8 秒 4 次 `uci` 派生;
+  新版每 5 秒 1 个 `snapshot`(命中状态文件时零派生),硬件探测仅在高级设置页可见时按需刷新
+- **移除常驻动画引擎**:删除逐帧 `requestAnimationFrame` 波形滚动与"占空比随机漂移"装饰;
+  风扇转子改由 CSS 动画按真实占空比调速,离开概览页即暂停
+
+### 修复
+
+- **无极模式重启后失效**:`fanvall=999` 未在守护进程主循环中被识别处理,服务重启后会用自动曲线覆盖用户的无级设定
+- **只读根文件系统导致控制进程退出**:`/usr/bin/fanspeed.conf` 镜像写入失败经 `?` 直接冒泡,
+  守护进程随即退出并被 procd 放弃;现降级为记录错误但不影响控制
+- **前后端状态解释不一致**:前端曾通过比较本地化字符串 `mode === '智能'` 判断模式,语言切换即失效
+- **滑块拖动即写硬件**:旧版 150ms 防抖把每次拖动变成一次 `stepless`(内部先 stop 服务再写占空比);
+  现拖动只更新预览,需显式点击"应用到风扇"
+- **轮询与动画监听器泄漏**:旧版在异步渲染的配置面板里再次 `poll.add` 且 rAF 循环无终止条件,站内导航后仍在后台跑;
+  现统一为单一轮询回调,容器脱离文档时自行 `poll.remove`
+- **未定义 CSS 变量**:`--gf-text-title` 被引用但从未定义;新界面变量定义完整
+- **深色模式**:旧界面主区域只有浅色令牌,深色主题下卡片仍为白色半透明
+
+### 兼容性
+
+- 保留 `daemon|status|temp|temps|legacy-temp|set|auto|stepless|hwdetect|reload` 全部子命令与参数顺序
+- 保留 `airpi-fanctl.sh`、`get_sys_temp.sh` 两个 rpcd 授权入口脚本及其输出格式
+- 保留 UCI 段类型 `fan` / 段名 `settings`、`/etc/fanvall`、`/usr/bin/fanspeed.conf`、
+  `/sys/kernel/duty_cycle`、`/sys/class/hwmon/*/pwm1` 全部路径语义
+- 升级设备的旧配置文件不含新选项,由守护进程按 `Config::default()` 补齐,默认行为与旧版逐位一致
+
+### 验证状态
+
+- 后端:`cargo test` 19 项单元测试通过(曲线默认值、范围校验、阈值顺序、迟滞降档、
+  最小保持、失效安全升级、守护接管与交还、无级档位保持、legacy 档位码映射、uci show 解析、模组温度解析);
+  `cargo clippy --all-targets` 无告警
+- 前端:jsdom 离线冒烟 50 项断言通过(渲染链、标签页切换不触发硬件写入、轮询去重与自注销、
+  控制命令互斥与反馈、导入导出校验、异常分支);其中 `String.prototype.format` 直接取自 LuCI 上游 `cbi.js`,
+  插值行为与设备一致
+- **实机验证:尚未执行**,等待设备侧 SSH 凭据;`tools/airpi-probe.sh` 已就绪,全程只读
+
 ## [6.0.0] - 2026-09-21
 
 > [!NOTE]
