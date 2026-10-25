@@ -373,12 +373,11 @@ var CSS = String('') +
 	'background:var(--ap-danger-soft);color:var(--ap-danger);}\n' +
 	'.ap-tab[aria-selected="true"] .ap-tab-badge{background:rgba(255,255,255,.28);color:inherit;}\n' +
 	'.ap-panel{display:none;}\n' +
-	'.ap-panel.is-active{display:block;animation:ap-fade .2s var(--ap-ease);}\n' +
+	'.ap-panel.is-active{display:grid;gap:var(--ap-gap);align-content:start;animation:ap-fade .2s var(--ap-ease);}\n' +
 	'@keyframes ap-fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}\n' +
-	'.ap-grid{display:grid;gap:var(--ap-gap);grid-template-columns:repeat(12,1fr);}\n' +
-	'.ap-card{grid-column:span 12;border:1px solid var(--ap-border);border-radius:var(--ap-radius);' +
-	'background:var(--ap-bg);box-shadow:var(--ap-shadow);overflow:hidden;' +
-	'margin-bottom:var(--ap-gap);}\n' +
+	'.ap-col{display:grid;gap:var(--ap-gap);align-content:start;}\n' +
+	'.ap-card{border:1px solid var(--ap-border);border-radius:var(--ap-radius);' +
+	'background:var(--ap-bg);box-shadow:var(--ap-shadow);overflow:hidden;}\n' +
 	'.ap-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;' +
 	'padding:12px 16px;border-bottom:1px solid var(--ap-border);}\n' +
 	'.ap-card-title{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;' +
@@ -1078,9 +1077,11 @@ return view.extend({
 			body: [this.refs.policyHost]
 		});
 
-		var left = E('div', {}, [fanCard, policyCard]);
-		var right = E('div', {}, [alarmCard, runCard, tempCard, trendCard]);
+		var left = E('div', { 'class': 'ap-col' }, [fanCard]);
+		var right = E('div', { 'class': 'ap-col' }, [alarmCard, runCard, tempCard, trendCard]);
 		this.panels.overview.appendChild(E('div', { 'class': 'ap-split' }, [left, right]));
+		/* 策略卡与其余卡片同宽对齐：放在分栏之外，占满版心 */
+		this.panels.overview.appendChild(policyCard);
 	},
 
 	buildControl: function() {
@@ -1500,11 +1501,22 @@ return view.extend({
 			return;
 
 		var band = num(st.band, 0),
-			duties = (st.policy || '').split(/\s+/).map(function(p) {
-				return p.split(':')[1];
+			/* 后端 policy 形如 "85:255 60:192 50:128 *:64"，自高温到低温排列，
+			   因此下标 0..3 对应档位 3..0 */
+			steps = String(st.policy || '').split(/\s+/).filter(Boolean).map(function(pair) {
+				var kv = pair.split(':');
+				return { temp: kv[0], duty: num(kv[1], 0), band: 3 };
 			});
 
-		dom.content(host, [
+		steps.forEach(function(step, index) {
+			step.band = steps.length - 1 - index;
+			step.label = step.temp === '*'
+				? _('低于 %s ℃').format(index > 0 ? steps[index - 1].temp : '—')
+				: _('达到 %s ℃').format(step.temp);
+		});
+
+		/* 卡片现在占满版心，左列参数、右列档位，两栏在窄屏自动堆叠 */
+		dom.content(host, E('div', { 'class': 'ap-duo' }, [
 			rows([
 				[_('生效曲线'), st.policy || '—', 'muted'],
 				[_('当前档位'), '%d / 3'.format(band), band >= 3 ? 'danger' : (band > 0 ? 'warning' : 'good')],
@@ -1515,10 +1527,16 @@ return view.extend({
 				[_('失效兜底'), 'PWM %s × %s 次'.format(st.fail_duty || '—', st.fail_count || '—'), 'muted'],
 				[_('连续失效'), String(st.misses || '0'), num(st.misses, 0) > 0 ? 'warning' : 'good']
 			]),
-			E('div', { 'style': 'margin-top:12px' }, [
-				E('div', { 'class': 'ap-chip-label', 'style': 'margin-bottom:6px' }, _('占空比档位: ' + duties.join(' → ')))
+			E('div', {}, [
+				E('div', { 'class': 'ap-chips' }, steps.map(function(step) {
+					return statChip(step.label, '%d · %d%%'.format(step.duty, dutyPct(step.duty)),
+						step.band === band ? 'info' : null);
+				})),
+				E('div', { 'class': 'ap-legend' }, [
+					E('span', {}, _('高亮的一档为当前温度所处的调速区间'))
+				])
 			])
-		]);
+		]));
 	},
 
 	paintTrend: function() {
