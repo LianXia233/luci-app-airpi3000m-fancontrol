@@ -28,6 +28,10 @@ jobs:
   build:
     name: 📦 编译 ${{ matrix.tag }} (${{ matrix.version }})
     runs-on: ubuntu-24.04
+    # immortalwrt-master 为快照 SDK,其依赖树可能撞上上游未修复的编译缺陷
+    # (如 libffi 3.4.7 与新版工具链不兼容,见 openwrt/openwrt#18041),
+    # 该目标仅用于前瞻验证,不阻塞发布,故允许失败。
+    continue-on-error: ${{ matrix.allow_failure || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -42,6 +46,7 @@ jobs:
           - version: 'ImmortalWrt master'
             sdk_url: ''
             tag: 'immortalwrt-master'
+            allow_failure: true
 
     steps:
       - name: 记录开始时间
@@ -260,6 +265,11 @@ jobs:
   release:
     name: 🚀 发布到 Releases
     needs: build
+    # immortalwrt-master 快照目标允许失败(continue-on-error),但其失败结论
+    # 仍会按默认规则级联跳过本任务。这里显式放行:仅在整个 build 被跳过
+    # 或运行被取消时不发布;快照目标失败时继续发布,由下方产物数量检查兜底
+    # (不足 2 个安装包即报错退出),确保真实构建问题不会带着残缺产物上线。
+    if: ${{ !cancelled() && needs.build.result != 'skipped' }}
     runs-on: ubuntu-24.04
     concurrency:
       group: release-${{ github.workflow }}-${{ github.ref }}

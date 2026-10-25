@@ -107,6 +107,11 @@
   中断构建（ImmortalWrt master 的 feeds.conf 无 base feed，故不受影响）。
   现在更新前先移除 `feeds/base` 目录，让脚本改走 `init_branch` 重新 clone；
   其余 feed（packages/luci/routing/telephony，均为 `^commit` 固定语法，缓存命中时本就跳过更新）行为不变
+- **immortalwrt-master 快照目标不再阻塞发布**：该目标当前会撞上上游未修复的依赖缺陷
+  （libffi 3.4.7 与新版工具链不兼容，见 openwrt/openwrt#18041；另见快照源码下载 403/404），
+  属上游 SDK 问题而非本项目代码问题。现将其标记为允许失败（`allow_failure: true`），
+  发布任务显式放行快照目标的失败结论，改由产物数量检查（≥2 个安装包）兜底；
+  OpenWrt 24.10.8 与 25.12.5 两个发布版目标保持严格失败即中断
 
 ### 实机反馈修正（第二轮）
 
