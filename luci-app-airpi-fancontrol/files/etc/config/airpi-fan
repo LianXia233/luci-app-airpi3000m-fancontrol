@@ -1,4 +1,51 @@
+# AirPi AP3000M 风扇控制
+#
+# 段类型 fan / 段名 settings 自 4.x 起未变，init 脚本与 airpi-fanctl 都按
+# airpi-fan.settings.<option> 读取。此文件只提供出厂默认值；从旧版本升级上来
+# 的设备会保留自己的配置，缺失项由守护进程按相同默认值补齐，因此这里的数值
+# 必须与 src/src/main.rs 中 Config::default() 保持一致。
 config fan 'settings'
+	# 驱动调度: auto | pwm | softpwm
 	option fan_driver 'auto'
+	# 软件 PWM 输出引脚（仅 softpwm 模式使用）
 	option fan_gpio '540'
+	# PWM 周期，单位微秒（仅 softpwm 使用，保存后热更新内核参数）
 	option fan_freq '15000'
+
+	# ---------- 温控曲线：温度阈值(℃) 与 占空比(0-255) ----------
+	# 阈值必须严格递增，占空比必须随温度单调不降，否则守护进程回退到出厂阶梯
+	# 并在页面上报告原因。
+	option temp_high '85'
+	option duty_high '255'
+	option temp_mid '60'
+	option duty_mid '192'
+	option temp_low '50'
+	option duty_low '128'
+	option duty_idle '64'
+
+	# ---------- 控制周期与平滑 ----------
+	option auto_interval '8'
+	option hysteresis '2'
+	option min_hold '30'
+
+	# ---------- 安全策略 ----------
+	# 超过 temp_crit 时，温控守护会临时接管手动/无极档位并拉满风扇
+	option temp_crit '95'
+	option crit_guard '1'
+	# 连续 fail_count 轮取不到有效温度时，按 fail_duty 兜底
+	option fail_duty '255'
+	option fail_count '3'
+	# 服务停止后留在风扇接口上的保底占空比（不再写 0）
+	option stop_duty '64'
+
+	# ---------- 温度来源与采样频率 ----------
+	option src_cpu '1'
+	option src_phy '1'
+	option src_wifi '1'
+	option src_modem '1'
+	# wifi/modem 需要外部命令，按此周期低频采样（秒）
+	option slow_interval '30'
+
+	# ---------- 诊断 ----------
+	# 0=关闭 1=仅错误 2=信息 3=调试
+	option log_level '2'

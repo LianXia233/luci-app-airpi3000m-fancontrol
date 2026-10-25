@@ -1,6 +1,12 @@
 #!/bin/sh /etc/rc.common
 # AirPi Fan Control unified init script (procd)
-# Part of luci-app-airpi-fancontrol v4.2.0
+#
+# Cooling-first rules baked into this script:
+#   * stop_service() leaves the fan interface at stop_duty (default 64) instead
+#     of 0 — losing the controller must never mean losing the airflow.
+#   * reload does not restart the daemon: airpi-fanctl re-reads /etc/config
+#     on every control loop, and a restart would interrupt the drive signal.
+#   * respawn retries are unlimited so a crash cannot silently strand the fan.
 
 USE_PROCD=1
 START=99
@@ -8,14 +14,24 @@ STOP=10
 
 PROGRAM="airpi-fancontrol"
 CONFIG_FILE="/etc/config/airpi-fan"
-PID_FILE="/var/run/airpi-fancontrol.pid"
 DUTY_PATH="/sys/kernel/duty_cycle"
 EMMC_FILE="/sys/block/mmcblk0/size"
 EMMC_THRESHOLD=25000000
+DEFAULT_STOP_DUTY=64
 
 printMsg() {
-    local msg="$1"
-    logger -t "${PROGRAM}" "${msg}"
+    logger -t "${PROGRAM}" "$1"
+}
+
+# Reads stop_duty and keeps it inside the 0..255 range the fan interfaces take.
+stop_duty() {
+    local duty="${DEFAULT_STOP_DUTY}"
+    config_get duty settings stop_duty "${DEFAULT_STOP_DUTY}"
+    case "$duty" in
+        ''|*[!0-9]*) duty="${DEFAULT_STOP_DUTY}" ;;
+    esac
+    [ "$duty" -gt 255 ] && duty=255
+    echo "$duty"
 }
 
 detect_emmc_sectors() {
@@ -24,28 +40,6 @@ detect_emmc_sectors() {
     case "$s" in ''|*[!0-9]*) return 1 ;; esac
     [ "$s" -gt 0 ] 2>/dev/null && echo "$s" && return 0
     return 1
-}
-
-load_softpwm_driver() {
-    local gpio freq
-    config_get gpio settings fan_gpio "540"
-    config_get freq settings fan_freq "15000"
-
-    rmmod airpi_gpio_fan 2>/dev/null
-
-    # 用模块名而非完整路径，兼容不同内核版本的安装路径
-    if ! insmod airpi-gpio-fan fangpio="$gpio" cycle=255 period="$freq" fanen=1; then
-        if ! modprobe airpi_gpio_fan fangpio="$gpio" cycle=255 period="$freq" fanen=1; then
-            printMsg "failed to load soft-PWM driver"
-            return 1
-        fi
-    fi
-
-    printMsg "soft-PWM driver loaded (GPIO=$gpio, period=$freq us)"
-
-    # 立即写入初始占空比让风扇转起来，不等 Rust 守护进程首轮循环
-    sleep 1
-    [ -w "$DUTY_PATH" ] && echo 64 > "$DUTY_PATH" 2>/dev/null
 }
 
 find_pwm_path() {
@@ -64,12 +58,34 @@ find_pwm_path() {
     return 1
 }
 
+load_softpwm_driver() {
+    local gpio freq duty
+    config_get gpio settings fan_gpio "540"
+    config_get freq settings fan_freq "15000"
+    duty=$(stop_duty)
+
+    rmmod airpi_gpio_fan 2>/dev/null
+
+    # 用模块名而非完整路径，兼容不同内核版本的安装路径
+    if ! insmod airpi-gpio-fan fangpio="$gpio" cycle=255 period="$freq" fanen=1; then
+        if ! modprobe airpi_gpio_fan fangpio="$gpio" cycle=255 period="$freq" fanen=1; then
+            printMsg "failed to load soft-PWM driver"
+            return 1
+        fi
+    fi
+
+    printMsg "soft-PWM driver loaded (GPIO=$gpio, period=$freq us)"
+
+    # 模块卸载会把引脚拉低，立即给出初始占空比，不等守护进程首轮循环
+    sleep 1
+    [ -w "$DUTY_PATH" ] && echo "$duty" > "$DUTY_PATH" 2>/dev/null
+    return 0
+}
+
 start_service() {
     local driver pwm emmc
 
-    [ -f "$CONFIG_FILE" ] || {
-        printMsg "Config file not found, using defaults"
-    }
+    [ -f "$CONFIG_FILE" ] || printMsg "config file not found, using defaults"
 
     config_load airpi-fan
     config_get driver settings fan_driver "auto"
@@ -100,32 +116,40 @@ start_service() {
 
     procd_open_instance
     procd_set_param command /usr/bin/airpi-fanctl daemon
-    procd_set_param respawn 3600 1 5
+    # threshold timeout retry —— retry 0 表示不限次数：散热控制不应因反复
+    # 崩溃而被 procd 永久放弃
+    procd_set_param respawn 3600 5 0
     procd_close_instance
 
     printMsg "AirPi fan control service started (procd)"
 }
 
 stop_service() {
-    local pwm
+    local duty pwm
+    config_load airpi-fan
+    duty=$(stop_duty)
+
     for pwm in /sys/class/hwmon/hwmon*/pwm1; do
         [ -w "$pwm" ] || continue
         case "$(cat "${pwm%/*}/name" 2>/dev/null)" in
-            pwmfan|pwm-fan) echo 64 > "$pwm" 2>/dev/null; break ;;
+            pwmfan|pwm-fan) echo "$duty" > "$pwm" 2>/dev/null; break ;;
         esac
     done
     if [ -w "$DUTY_PATH" ]; then
-        echo 0 > "$DUTY_PATH" 2>/dev/null
+        echo "$duty" > "$DUTY_PATH" 2>/dev/null
     fi
 
-    printMsg "AirPi fan control service stopped"
+    printMsg "AirPi fan control service stopped, fan held at duty $duty"
+}
+
+reload_service() {
+    # 守护进程每轮控制循环都会重读 /etc/config/airpi-fan，因此保存配置并不需要
+    # 重启服务 —— 重启会让风扇短暂失去驱动。若服务根本没在跑，由前端调用
+    # airpi-fanctl reload 负责补一次 start（该路径自己判定进程状态，不依赖
+    # rc.common 的 running 助手）。
+    printMsg "configuration reloaded; the running daemon applies it on its next control loop"
 }
 
 service_triggers() {
     procd_add_reload_trigger "airpi-fan"
-}
-
-reload_service() {
-    stop
-    start
 }
