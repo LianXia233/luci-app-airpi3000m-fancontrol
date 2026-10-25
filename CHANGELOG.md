@@ -108,7 +108,29 @@
 - 前端:jsdom 离线冒烟 50 项断言通过(渲染链、标签页切换不触发硬件写入、轮询去重与自注销、
   控制命令互斥与反馈、导入导出校验、异常分支);其中 `String.prototype.format` 直接取自 LuCI 上游 `cbi.js`,
   插值行为与设备一致
-- **实机验证:尚未执行**,等待设备侧 SSH 凭据;`tools/airpi-probe.sh` 已就绪,全程只读
+- **实机验证（AirPi AP3000M 16GB / ImmortalWrt SNAPSHOT / 内核 6.18.55 / LuCI 26.295 / apk）**
+  以文件替换方式安装新二进制、init 脚本与前端（原文件已备份，配置保持 6.x 三项不变以验证升级兼容）：
+
+  | 验证项 | 实测结果 |
+  | --- | --- |
+  | 只读探测 | eMMC 30535680 扇区 → 判定 16GB 走软 PWM；`airpi_gpio_fan` Live、`duty_cycle=192`；无任何 `fan*_input`，确认无 tach 反馈 |
+  | 温度聚合修正 | 实机 `phy` 桶含交换 PHY(42℃) 与两颗 mt7915(66~68℃)；修正后 `temps` 报 `phy=68`，与旧版一致；修正前会误报 42℃ |
+  | CPU 温度异常 | `thermal_zone0` 报 -12712 等负值，被 1~150℃ 有效性区间丢弃，快照以 `cpu_mc=-1` + 原因如实上报，不参与仲裁 |
+  | 停止服务保底 | `stop` 后 `duty_cycle` 由旧版的 0 变为 64，`start` 后 3 秒内回到 192，风扇全程未停转 |
+  | 手动/无级常驻 | `set 255 3` 后 10 秒 duty 仍 255 且 `daemon=1`（旧版此时守护进程已退出） |
+  | 显式降档即时 | `set 64 0` 后 1 秒 duty=64，10 秒后仍 64，未被 `min_hold` 顶回 |
+  | 无级扛过重启 | `stepless 170` 后 `restart`，duty 仍 170（旧版会被自动曲线覆盖为 192） |
+  | 温控守护 | 阈值改为 60/62 后实测 68℃ 触发：duty→255、`alarm=thermal`、`guarded=1`，而 `fanspeed.conf` 保持 170 |
+  | 守护交还 | 阈值恢复 85/95 后 duty 自动回到 170，未卡在满速 |
+  | 曲线热更新 | 修改 `temp_*` 后未重启服务，下一个 8 秒周期 `policy` 即反映新值 |
+  | PWM 下限拦截 | `uci set fan_freq=100` → `config_errors` 明确报 256..=1000000，内核 `parameters/period` 仍为 15000（未被危险热写） |
+  | 失效安全 | 停用全部来源后 `misses=4` → duty=255、`alarm=sensor`；旧版此处会落到最低档 |
+  | RPC 成本 | 30 次刷新：新版 `snapshot` 合计 0.08s，旧版 `status+temp+temps+hwdetect` 合计 0.75s（约 9.4×） |
+  | CLI 兼容 | `legacy-temp -c/-s/-a`、`get_sys_temp.sh -c`、`hwdetect`、`status` 输出逐项比对，除 `mode=` 改为机器码外保持一致 |
+  | 前端下发 | `GET /luci-static/resources/view/airpi-fancontrol/fancontrol.js` → 200、80206 字节，与本地源文件逐字节一致，含五个标签页文案 |
+
+- **尚未验证**：浏览器内的交互验证（登录后的页面渲染、TAB 切换与保存动作，需要人工登录会话）；
+  CI 产出的 `.apk` 安装/升级/卸载路径（本次验证为文件替换）；整机重启后的开机自启（涉及路由网络中断，未执行）。
 
 ## [6.0.0] - 2026-09-21
 
