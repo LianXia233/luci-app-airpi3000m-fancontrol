@@ -4,6 +4,34 @@
 
 ## [未发布]
 
+### 修复
+
+- **ImmortalWrt master 作业永久失败（`内核配置与官方固件不一致，终止发布`）**：
+  根因不是产物，而是 v7.0.3 新增的 ABI 强制门本身不可满足。逐项核对内核
+  6.18.55 源码：`MODULES_TREE_LOOKUP` 是 `def_bool y`（`depends on
+  PERF_EVENTS || TRACING || CFI`），`BPF_EVENTS` 是 `default y` 且无 prompt，
+  `TRACING`/`TRACEPOINTS`/`EVENT_TRACING` 无 prompt、只靠 `select` 打开——
+  这 5 项在内核 `syncconfig` 里必然回到 `y`，任何「写 `.config` / 钩
+  `Kernel/Configure`」的手法都无效；另外 `MODULES_TREE_LOOKUP` 在 6.18 的
+  `struct module` 中**没有任何字段**，所谓「-384 字节」不成立。现在移除整套
+  强制机制（`tools/kernel-config-force.sh`、`tools/patch-kernel-defaults.py`、
+  matrix 的 `firmware_abi_override` 轴），master 目标恢复与 24.10/25.12 相同的
+  「对齐同快照 `config.buildinfo`」策略，校验门只保留可满足的覆盖层校验
+- **ABI 基准改用 SDK 自带内核配置**：官方 SDK 的 `build_dir/.../linux-<ver>/`
+  是按官方镜像配置编好的内核树，其 `.config` 才是该目标 ABI 的权威基准
+  （`config.buildinfo` 只有 17 个 `CONFIG_KERNEL_*` 包装符号）。现在配置之前
+  先备份该文件，编译后把 18 个可能影响 `struct module` 布局的符号与基准逐项
+  对照，偏差以 `::warning::` 记录（多数符号不可强制，只告警不失败）；verify
+  日志额外打印 `.ko` 的 `this_module` 区段大小、`__this_module` 重定位数与
+  `.BTF` 段数量
+- **README「差异根源」更正**：删掉错误的字节归因表，改为按 Kconfig 形态说明
+  哪些符号可关、哪些不可能关；并给出与**私有内核**对齐的正确做法——从设备取
+  `zcat /proc/config.gz`（或 `extract-ikconfig`）拿到真实内核配置再编模块，
+  而不是照官方 buildinfo 猜符号。校准依据：官方 master SDK 内核配置里
+  `FTRACE`/`TRACING`/`TRACEPOINTS`/`EVENT_TRACING`/`BPF_EVENTS`/
+  `DEBUG_INFO_BTF(_MODULES)`/`MODULES_TREE_LOOKUP` 全为 `y`，即 `0x4c0`
+  正是官方快照固件的布局，实机那台 `0x2c0` 的固件并非用官方配置构建
+
 ## [7.0.3] - 2026-10-28
 
 ### 修复

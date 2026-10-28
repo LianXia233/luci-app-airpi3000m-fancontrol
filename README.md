@@ -343,28 +343,35 @@ cat /sys/kernel/duty_cycle          # 读取当前占空比
 
 ```
 
-### 差异根源：Kconfig 配置改变了结构体大小与偏移
+### 差异根源：`struct module` 的大小由内核编译配置决定
 
-| 内核配置项 | 官方 SDK 默认 | 目标固件环境 | 对 struct module 的影响 |
+`.gnu.linkonce.this_module` 区段就是 `struct module` 的一份实例，其大小与字段偏移
+由内核 `include/linux/module.h` 里的条件编译决定。因此**同一份源码、同一个
+vermagic，只要内核配置不同，`.ko` 的 `this_module` 大小就会不同**，内核在
+`load_module()` 里按自己编进来的 `sizeof(struct module)` 校验，不一致直接拒绝。
+
+关键结论（内核 6.18.55，逐项核对源码）：
+
+| 符号 | 6.18.55 的 Kconfig 形态 | 能否置为 n | 对 `struct module` 的影响 |
 | --- | --- | --- | --- |
-| `CONFIG_MODULES_TREE_LOOKUP` | y | n | 结构体大小变化 **-384 字节** |
-| `CONFIG_EVENT_TRACING` | y | n | 结构体大小变化 **-64 字节** |
-| `CONFIG_DEBUG_INFO_BTF_MODULES` | y | n | 结构体大小变化 **-64 字节** |
-| `CONFIG_BPF_EVENTS` | y | n | 总大小看似被对消，但导致 `exit` 字段后移 16 字节！ |
+| `MODULES_TREE_LOOKUP` | `def_bool y`，`depends on PERF_EVENTS \|\| TRACING \|\| CFI` | **不可能**（无 prompt） | **0 字节**：6.18 的 `struct module` 已无该符号控制的字段 |
+| `TRACING` / `TRACEPOINTS` / `EVENT_TRACING` | `bool`、无 prompt，靠 `select` 打开 | **不可能**（被 `FTRACE`/`KPROBE_EVENTS`/`BPF_EVENTS` 等 select） | 约 16 / 16 / 32 字节（按 `module.h` 字段推算） |
+| `BPF_EVENTS` | `bool`、`default y`、无 prompt | **不可能** | 约 16 字节 |
+| `DEBUG_INFO_BTF` / `DEBUG_INFO_BTF_MODULES` | 有 prompt、`default y` | 可以 | 0 / 24 字节 |
+| `FTRACE` | `menuconfig`、`default y if DEBUG_KERNEL` | 可以 | 0 字节（本身不占字段） |
 
 > [!WARNING]
-> 最后一项尤其隐蔽：结构体大小总和完全一致，但由于 `mod->exit` 被内核偏移解析为 `NULL`，模块会被强制标为 `[permanent]`，表现为**可加载、可控速，但无法 `rmmod` 卸载**。
-> **核验基准命令**：
-> ```sh
-> readelf -SW airpi-gpio-fan.ko | grep this_module   # 期望 size = 0x2c0 (704)
-> readelf -rW airpi-gpio-fan.ko | grep this_module   # 期望恰好 2 个重定位项: 0x138 与 0x298
-> 
-> ```
+> v7.0.2/v7.0.3 曾按「`MODULES_TREE_LOOKUP` -384、`EVENT_TRACING` -64、
+> `BTF_MODULES` -64」这套字节归因，在 CI 里把 8 个符号强制成 `n`。这套归因是错的：
+> 6.18 的 `struct module` 里没有受 `MODULES_TREE_LOOKUP` 控制的字段，384 字节无从谈起；
+> 而表中「不可能」的 5 个符号无论怎么写 `.config`（甚至改 Kconfig 之外的任何地方）
+> 都会被内核 `syncconfig` 按 `select`/`default` 规则改回 `y`。这就是 CI 校验门
+> 永远红灯的原因——**门本身不可满足**，不是产物有问题。
 
 ### 实机取证：同一份源码、同一个 vermagic，`.ko` 却差 512 字节
 
 2026-10-28 在一台 ImmortalWrt 固件（内核 6.18.55，镜像内置模块）上对
-「固件自带的 .ko」与「CI 对着 master SDK 编出的 .ko」做了逐项比对，确认了上述推断：
+「固件自带的 .ko」与「CI 对着 master SDK 编出的 .ko」做了逐项比对：
 
 | 观测量 | 固件自带（可加载） | CI 构建（被拒绝） |
 | --- | --- | --- |
@@ -373,28 +380,40 @@ cat /sys/kernel/duty_cycle          # 读取当前占空比
 | `__this_module` 重定位项数 | 2 | 4 |
 | `.BTF` 段 | 无 | 无 |
 
-差异（512 字节 = 0x200，重定位 +2）全部来自**内核编译配置**，与模块源码无关。
-固件自带的另一个官方编译模块 `pwm-fan.ko` 的 `this_module` 同为 `0x2c0`，
-说明这是该固件内核的统一布局，而非本模块的偶然。
+差异（512 字节）全部来自**内核编译配置**，与模块源码无关；同固件的 `pwm-fan.ko`
+也是 `0x2c0`，说明是该固件内核的统一布局。
 
-### CI 如何保证 kmod 与官方固件兼容（v7.0.3 起）
+但这 512 字节**不是**上面那 8 个符号造成的：官方 master SDK 自带的内核树
+（`build_dir/target-*/linux-*/linux-*/.config`，即官方镜像的编译配置）里
+`FTRACE`/`TRACING`/`TRACEPOINTS`/`EVENT_TRACING`/`BPF_EVENTS`/`DEBUG_INFO_BTF`/
+`DEBUG_INFO_BTF_MODULES`/`MODULES_TREE_LOOKUP` **全部为 `y`**，它与
+`config.buildinfo` 的 17 个 `CONFIG_KERNEL_*` 包装符号完全一致。也就是说：
+**`0x4c0` 才是官方快照固件的布局，那台设备的固件不是用这份官方配置编的**
+（厂商/自建内核裁剪了更多子系统，`0x2c0` 是其私有配置的产物）。
 
-SDK 的 `Config.in` 是重新生成的（BUILDBOT 预设），不保证内核符号默认值与官方镜像
-构建一致。v7.0.3 起 CI 对每个矩阵目标：
+> [!NOTE]
+> 想与这类私有内核对齐，唯一可靠的办法是拿到**它自己的内核配置**：
+> `zcat /proc/config.gz > device.config`（或 `extract-ikconfig` 解 boot 镜像），
+> 再用这份配置编内核 + 模块（`make kernel_menuconfig` 导入后 `make target/linux/compile`），
+> 或直接把本包的 kmod 放进该固件的构建树。照着官方 buildinfo 猜符号没有意义。
 
-1. **对齐**：下载官方发布目录下的 `config.buildinfo`，把其中 `CONFIG_KERNEL_*`
+### CI 如何保证 kmod 与官方固件兼容
+
+每个矩阵目标的 SDK 都自带**按官方镜像配置编好的内核树**，其中的 `.config`
+就是该目标 ABI 的权威基准。当前流水线：
+
+1. **对齐**：下载同快照发布目录下的 `config.buildinfo`，把其中 `CONFIG_KERNEL_*`
    段作为覆盖层写进 SDK 的 `.config`（`include/kernel-defaults.mk` 的
-   `Kernel/Configure/Default` 会把它剥前缀合并进内核 `.config`），内核即按
-   官方固件的配置编译；同时安装 `dwarves`（pahole）以支持 BTF 模块构建
+   `Kernel/Configure/Default` 会剥前缀合并进内核 `.config`）；同时安装
+   `dwarves`（pahole）以支持 BTF 模块构建
 2. **校验**：编译后逐个比对内核 `.config` 与覆盖层，任何符号不符即使作业失败，
    不允许发出加载不上的 `.ko`；构建缓存键纳入覆盖层指纹，配置一变即重编内核
-3. **ABI 强制（仅 master 快照目标）**：master 是滚动快照，其 buildinfo 描述
-   「今天」的构建配置；已实测的 2026-10-22 固件 `.ko` 为 `this_module=0x2c0`、
-   无 `.BTF`，对应 `DEBUG_INFO_BTF(_MODULES)`、`EVENT_TRACING`、
-   `MODULES_TREE_LOOKUP` 三项为 n（其中两项是内核内部符号，不经
-   `CONFIG_KERNEL_*` 包装，直接写入目标配置）。verify 门强制校验这三项；
-   固件 ABI 的观测量（区段大小 / 重定位数）每次构建都会打印在 verify 日志
-4. **自检**：记录 `.ko` 的 `this_module` 区段大小与重定位数到构建日志，便于比对
+3. **对照基准**：配置之前先把 SDK 自带内核 `.config` 备份为基准，编译后把可能
+   影响 `struct module` 布局的 18 个符号与基准逐项对照，偏差以 `::warning::`
+   打进日志（这些符号多数在内核 Kconfig 层不可强制，只告警不失败）
+4. **自检**：记录 `.ko` 的 `this_module` 区段大小、`__this_module` 重定位数与
+   `.BTF` 段数量到 verify 日志，便于发布前比对
+
 
 > [!IMPORTANT]
 > 因此 Release 的 kmod 的可加载范围是：**官方 OpenWrt 24.10.8 / 25.12.5 /
