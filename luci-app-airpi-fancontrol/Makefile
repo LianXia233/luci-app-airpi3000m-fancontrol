@@ -5,6 +5,15 @@
 # luci-app-airpi-fancontrol
 #   Fan control web UI for the AirPi AP3000M (MediaTek MT7981B / filogic).
 #
+# v7.0.3: fix the module-load failure diagnosis users actually hit.
+#   - CI now aligns the SDK kernel build to the official firmware's kernel
+#     config (config.buildinfo CONFIG_KERNEL_* overlay) and verifies the built
+#     kernel .config against it, so the released kmod is ABI-compatible with
+#     the official firmware instead of merely vermagic-matching
+#   - load_softpwm_driver now reports the kernel's rejection reason
+#     (".gnu.linkonce.this_module" => kernel build config mismatch) with
+#     actionable guidance instead of a bare "failed to load soft-PWM driver"
+#
 # v7.0.2: retire Lua from the build closure entirely (CI refactor).
 #   - the web stack is JS (client view) + ucode (LuCI runtime) + Rust (daemon);
 #     no .lua file exists in this repository and luci-base only needs the
@@ -55,7 +64,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-airpi-fancontrol
-PKG_VERSION:=7.0.2
+PKG_VERSION:=7.0.3
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=AirPi Community

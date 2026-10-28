@@ -25,9 +25,11 @@ env:
 jobs:
   # 三个矩阵目标共享同一套流程。耗时大头是 package/kernel/linux 的内核全量编译
   # （kmod-airpi-gpio-fan 必须对着目标内核构建），单次约 95 分钟。
-  # 因此除 SDK / feeds 缓存外，再按「目标 + SDK 指纹 + 内核版本」缓存
-  # build_dir/target-* 与 staging_dir/target-*：命中时内核与依赖包直接复用，
-  # 整体从约 100 分钟降到数分钟；未命中时退化为全量编译，行为不变。
+  # 因此除 SDK / feeds 缓存外，再按「目标 + SDK 指纹 + 内核版本 + 内核配置
+  # 覆盖层指纹」缓存 build_dir/target-* 与 staging_dir/target-*：命中时内核与
+  # 依赖包直接复用，整体从约 100 分钟降到数分钟；未命中时退化为全量编译，
+  # 行为不变。覆盖层取自官方固件的 config.buildinfo（见「生成内核配置覆盖层」），
+  # 它的指纹进键是为了保证内核配置一变就重编，不会被旧配置的内核缓存蒙混过关。
   # 另外生成编译配置时显式关闭 ALL_KMODS / ALL_NONSHARED / ALL（SDK 默认 y），
   # 否则 package/kernel/linux 会全量编译数千个无关内核模块（约 2 小时），
   # 且 lucihttp lua 变体、ucode-mod-ffi(+libffi) 等无关组件会被拖进闭包。
@@ -42,13 +44,19 @@ jobs:
         include:
           - version: 'OpenWrt 24.10.8'
             sdk_url: 'https://downloads.openwrt.org/releases/24.10.8/targets/mediatek/filogic/openwrt-sdk-24.10.8-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst'
+            # 官方镜像构建时使用的顶层 .config（CONFIG_KERNEL_* 段即官方内核配置），
+            # 用于把 SDK 的内核编译配置对齐到官方固件，见「生成内核配置覆盖层」
+            config_url: 'https://downloads.openwrt.org/releases/24.10.8/targets/mediatek/filogic/config.buildinfo'
             tag: 'ipk'
           - version: 'OpenWrt 25.12.5'
             sdk_url: 'https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
+            config_url: 'https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/config.buildinfo'
             tag: 'apk'
           # immortalwrt master 快照 SDK(当前为 kernel 6.18),用于验证最新内核适配
+          # config.buildinfo 与 SDK 取自同一次快照（同一目录），避免两者跨越更新
           - version: 'ImmortalWrt master'
             sdk_url: ''
+            config_url: ''
             tag: 'immortalwrt-master'
 
     steps:
@@ -72,18 +80,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential clang flex bison g++ gawk gettext git bc \
             libncurses-dev libssl-dev libelf-dev python3 python3-setuptools \
-            rsync swig unzip zlib1g-dev file wget zstd
+            rsync swig unzip zlib1g-dev file wget zstd \
+            dwarves
+          # dwarves 提供 pahole：官方固件的内核配置开启了 DEBUG_INFO_BTF(_MODULES)，
+          # 对齐后 SDK 内核编译需要它才能为模块生成 .BTF；缺失时编出的 .ko
+          # 与官方模块结构不同，甚至可能被内核拒绝加载。
 
       - name: 计算 feeds 缓存时间桶
         id: bucket
         run: echo "week=$(date +%G-W%V)" >> "$GITHUB_OUTPUT"
 
-      - name: 解析 SDK 下载地址
+      - name: 解析 SDK 下载地址与官方内核配置
         id: sdkurl
         run: |
           set -euo pipefail
           if [ -n "${{ matrix.sdk_url }}" ]; then
             URL="${{ matrix.sdk_url }}"
+            CFG_URL="${{ matrix.config_url }}"
           else
             # ImmortalWrt master 快照:从下载目录动态解析最新 SDK 文件名
             BASE="https://downloads.immortalwrt.org/snapshots/targets/${TARGET}/${SUBTARGET}"
@@ -91,10 +104,20 @@ jobs:
             SDK_FILE=$(echo "$LISTING" | grep -oE 'immortalwrt-sdk-[^"]+\.Linux-x86_64\.tar\.zst' | head -1)
             [ -n "$SDK_FILE" ] || { echo "::error::无法从 $BASE 解析 SDK 文件名"; exit 1; }
             URL="$BASE/$SDK_FILE"
+            # 同目录下的 config.buildinfo 即该快照官方镜像的内核配置，与 SDK
+            # 取自同一次快照，两者不会跨越快照更新而失配
+            CFG_URL="$BASE/config.buildinfo"
           fi
+          # config.buildinfo 是官方镜像构建时使用的顶层 .config，其中
+          # CONFIG_KERNEL_* 段经 include/kernel-defaults.mk 剥前缀合并进内核
+          # .config，是「.ko 与官方固件 ABI 兼容」的唯一权威来源
+          wget -qO config.buildinfo "$CFG_URL"
+          [ -s config.buildinfo ] || { echo "::error::下载官方内核配置失败: $CFG_URL"; exit 1; }
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "hash=$(printf '%s' "$URL" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "config=$CFG_URL" >> "$GITHUB_OUTPUT"
           echo "SDK: $URL"
+          echo "官方内核配置: $CFG_URL"
 
       # SDK 解压后约 1-1.5GB,是单次运行最大的固定开销。缓存键取自下载地址,
       # 固定版本 SDK 可长期命中,快照 SDK 换包时自动失效。
@@ -135,6 +158,42 @@ jobs:
           [ -n "$KVER" ] || KVER=unknown
           echo "kver=$KVER" >> "$GITHUB_OUTPUT"
           echo "内核版本: $KVER"
+
+      # SDK 的 Config.in 是重新生成的（BUILDBOT 预设），不保证内核符号默认值
+      # 与官方镜像构建一致。即使 vermagic 完全相同，struct module 布局不同也会
+      # 让内核拒绝加载编出来的 .ko（实机取证见 README「差异根源」一节）：
+      #   ".gnu.linkonce.this_module section size must match ..."
+      # 把官方 config.buildinfo 的 CONFIG_KERNEL_* 段作为覆盖层写进 SDK 的
+      # .config，内核即按官方固件的配置编译（合并机制见
+      # include/kernel-defaults.mk 的 Kernel/Configure/Default）。
+      - name: 生成内核配置覆盖层
+        id: kconf
+        run: |
+          set -euo pipefail
+          # 只取 CONFIG_KERNEL_* 段（含 "# CONFIG_KERNEL_x is not set" 形式），
+          # 并过滤掉本 SDK kconfig 中不存在的符号：未知符号会在构建时拉起
+          # 交互式 menuconfig 把作业挂死（见「生成编译配置」注释）。
+          # BUILD_DOMAIN / BUILD_USER 只影响构建者字符串、不参与 ABI，跳过。
+          grep -E '^(#[[:space:]]+)?CONFIG_KERNEL_' config.buildinfo > kernel-config.overlay.raw || true
+          KDEFS=""
+          for f in sdk/config/Config-kernel.in sdk/config/Config.in; do
+            [ -f "$f" ] && KDEFS="$KDEFS $f"
+          done
+          [ -n "$KDEFS" ] || { echo "::error::未找到 SDK kconfig 定义文件"; exit 1; }
+          : > kernel-config.overlay
+          while IFS= read -r line; do
+            sym=$(printf '%s\n' "$line" | sed -E 's/^#[[:space:]]+//; s/^CONFIG_KERNEL_([A-Za-z0-9_]+).*$/\1/')
+            case "$sym" in
+              ''|BUILD_DOMAIN|BUILD_USER) continue ;;
+            esac
+            grep -q "^config KERNEL_${sym}\$" $KDEFS || continue
+            printf '%s\n' "$line" >> kernel-config.overlay
+          done < kernel-config.overlay.raw
+          COUNT=$(wc -l < kernel-config.overlay)
+          [ "$COUNT" -ge 1 ] || { echo "::error::官方内核配置覆盖层为空"; exit 1; }
+          echo "hash=$(sha256sum kernel-config.overlay | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "----- 内核配置覆盖层（$COUNT 项，来源 ${{ steps.sdkurl.outputs.config }}）-----"
+          cat kernel-config.overlay
 
       - name: 恢复 feeds 缓存
         id: cache-feeds
@@ -201,8 +260,10 @@ jobs:
         run: python3 "$GITHUB_WORKSPACE/pkgsrc/tools/patch-libffi.py" "$GITHUB_WORKSPACE/sdk"
 
       # 内核全量编译是单个作业最大的固定开销（约 95 分钟）。缓存 build_dir 与
-      # staging_dir 的 target 部分后，SDK 指纹 + 内核版本 + 包源码均不变时直接复用，
-      # 只有本仓库的两个包会重新编译。未命中时退化为全量编译，不影响正确性。
+      # staging_dir 的 target 部分后，SDK 指纹 + 内核版本 + 内核配置覆盖层均不变时
+      # 直接复用，只有本仓库的两个包会重新编译。未命中时退化为全量编译，不影响正确性。
+      # 注意：这里必须用精确键、不能用 restore-keys 前缀回退——回退会恢复到按旧
+      # 配置编译的内核，让「生成内核配置覆盖层」静默失效，编出与官方固件不兼容的 .ko。
       - name: 恢复构建缓存
         id: cache-build
         uses: actions/cache/restore@v4
@@ -210,9 +271,7 @@ jobs:
           path: |
             sdk/build_dir/target-*
             sdk/staging_dir/target-*
-          key: build-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.kver.outputs.kver }}-${{ steps.bucket.outputs.week }}
-          restore-keys: |
-            build-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.kver.outputs.kver }}-
+          key: build-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.kver.outputs.kver }}-${{ steps.kconf.outputs.hash }}
 
       # 缓存恢复会把目录 mtime 写成解压时刻，比缓存里的 stamp 更新，make 会误判
       # 为源码变更而重编内核。这里只把恢复出来的目录（不含文件）时间戳回拨，
@@ -236,8 +295,11 @@ jobs:
           # "# CONFIG_PACKAGE_lua is not set" 之类的行，追加行永远不生效。
           # 因此跳过初始 defconfig，直接从干净种子文件一次性生成完整配置。
           # 幂等:缓存 SDK 中可能残留旧 .config，先删除。
+          # 官方内核配置覆盖层必须写在最前面：它与下面的种子行符号不重叠，
+          # 但只有早于 defconfig 补的默认值，才会被「首个赋值优先」保留。
           rm -f .config
-          cat > .config <<'EOF'
+          cat "$GITHUB_WORKSPACE/kernel-config.overlay" > .config
+          cat >> .config <<'EOF'
           CONFIG_PACKAGE_luci-app-airpi-fancontrol=m
           CONFIG_PACKAGE_kmod-airpi-gpio-fan=m
           # SDK 的 Config.in 把 ALL 默认置 y（BUILDBOT 预设），连带
@@ -304,6 +366,60 @@ jobs:
             make package/airpi-gpio-fan/compile V=s -j1 </dev/null
           fi
 
+      # 编译后校验：覆盖层里的每个符号都必须按预期值出现在内核 .config 中。
+      # 二者一致即证明 .ko 与官方固件的内核配置逐位相同（同一 SDK 指纹下 target
+      # 配置文件也同源），模块必然可被官方固件加载。不一致说明 SDK 的 kconfig
+      # 丢掉了某个符号（新符号挂起或被默认值覆盖），此时宁可失败，
+      # 也不能把加载不上的 .ko 发成 Release。
+      - name: 校验内核配置与官方固件一致
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          KCONF=$(ls -d build_dir/target-*/linux-*/linux-*/.config 2>/dev/null | head -1)
+          [ -n "$KCONF" ] || { echo "::error::未找到内核 .config，内核未配置？"; exit 1; }
+          echo "内核配置: $KCONF"
+          FAIL=0
+          while IFS= read -r line; do
+            sym=$(printf '%s\n' "$line" | sed -E 's/^#[[:space:]]+//; s/^CONFIG_KERNEL_([A-Za-z0-9_]+).*$/\1/')
+            [ -n "$sym" ] || continue
+            case "$line" in
+              \#*)
+                # 未设置项：显式 not-set 或根本不出现在内核配置中都算通过
+                if grep -qE "^# CONFIG_${sym} is not set" "$KCONF"; then
+                  echo "  ok  (未设置) CONFIG_${sym}"
+                elif grep -qE "^CONFIG_${sym}=" "$KCONF"; then
+                  echo "::error::CONFIG_${sym} 应为未设置，实际为 $(grep -E "^CONFIG_${sym}=" "$KCONF" | head -1)"
+                  FAIL=1
+                else
+                  echo "  ok  (内核配置中无此项) CONFIG_${sym}"
+                fi
+                ;;
+              *)
+                val=${line#CONFIG_KERNEL_${sym}=}
+                if grep -qxF "CONFIG_${sym}=${val}" "$KCONF"; then
+                  echo "  ok  CONFIG_${sym}=${val}"
+                else
+                  echo "::error::CONFIG_${sym}=${val} 未按预期出现在内核 .config 中（实际: $(grep -E "^CONFIG_${sym}=" "$KCONF" | head -1 || echo 无)）"
+                  FAIL=1
+                fi
+                ;;
+            esac
+          done < "$GITHUB_WORKSPACE/kernel-config.overlay"
+
+          # .ko 的 ABI 观测量：this_module 区段大小与重定位数。官方固件的参考值
+          # 见 README「差异根源」一节；这里记录到日志，便于发布前人工比对。
+          KO=$(find build_dir -name 'airpi-gpio-fan.ko' 2>/dev/null | head -1)
+          if [ -n "$KO" ]; then
+            echo "----- .ko ABI 观测量: $KO -----"
+            readelf -SW "$KO" | grep this_module || echo "  (无 this_module 区段！)"
+            echo "  __this_module 重定位数: $(readelf -rW "$KO" 2>/dev/null | grep -c '__this_module' || true)"
+          else
+            echo "::warning::未找到 airpi-gpio-fan.ko，跳过 ABI 观测量记录"
+          fi
+
+          [ "$FAIL" -eq 0 ] || { echo "::error::内核配置与官方固件不一致，终止发布"; exit 1; }
+          echo "内核配置与官方固件一致"
+
       # 内核与依赖包的编译产物是本次运行最贵的产出,缓存下来给后续运行复用。
       # 保存失败（例如同 key 已存在）不应让作业变红,故 continue-on-error。
       - name: 保存构建缓存
@@ -314,7 +430,7 @@ jobs:
           path: |
             sdk/build_dir/target-*
             sdk/staging_dir/target-*
-          key: build-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.kver.outputs.kver }}-${{ steps.bucket.outputs.week }}
+          key: build-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.kver.outputs.kver }}-${{ steps.kconf.outputs.hash }}
 
       - name: 收集安装包
         working-directory: sdk

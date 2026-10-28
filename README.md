@@ -54,6 +54,16 @@
 
 前往 [Releases 页面](https://github.com/LianXia233/luci-app-airpi3000m-fancontrol/releases) 下载对应固件版本的安装包：
 
+> [!WARNING]
+> **内核模块与固件严格对应，先判断你的固件是否已自带风扇驱动**。
+> `kmod-airpi-gpio-fan` 是内核模块，必须与目标固件的内核（版本**和编译配置**）一致才能加载——
+> 版本号一致不等于能加载，详见下文「差异根源」。Release 中的 kmod 由 CI 按官方
+> OpenWrt 24.10.8 / 25.12.5 / ImmortalWrt 当前快照的内核配置构建并逐项校验。
+> **厂商 / 自建固件通常已在镜像内内置该模块**，这类设备执行
+> `lsmod | grep airpi_gpio_fan` 有输出时，**只安装 luci-app 即可，不要再安装
+> Release 的 kmod**——它会覆盖固件里与你的内核匹配的那一份，覆盖后模块将无法加载。
+> 自建固件用户请在编译镜像时直接纳入本仓库的包，不要用 Release 的 kmod 覆盖。
+
 ### 方式 A：apk 系统 (OpenWrt 25.12.x / ImmortalWrt master 快照)
 
 ```sh
@@ -350,6 +360,41 @@ cat /sys/kernel/duty_cycle          # 读取当前占空比
 > readelf -rW airpi-gpio-fan.ko | grep this_module   # 期望恰好 2 个重定位项: 0x138 与 0x298
 > 
 > ```
+
+### 实机取证：同一份源码、同一个 vermagic，`.ko` 却差 512 字节
+
+2026-10-28 在一台 ImmortalWrt 固件（内核 6.18.55，镜像内置模块）上对
+「固件自带的 .ko」与「CI 对着 master SDK 编出的 .ko」做了逐项比对，确认了上述推断：
+
+| 观测量 | 固件自带（可加载） | CI 构建（被拒绝） |
+| --- | --- | --- |
+| `vermagic` | `6.18.55 SMP mod_unload aarch64` | 完全相同 |
+| `.gnu.linkonce.this_module` 区段大小 | `0x2c0`（704） | `0x4c0`（1216） |
+| `__this_module` 重定位项数 | 2 | 4 |
+| `.BTF` 段 | 无 | 无 |
+
+差异（512 字节 = 0x200，重定位 +2）全部来自**内核编译配置**，与模块源码无关。
+固件自带的另一个官方编译模块 `pwm-fan.ko` 的 `this_module` 同为 `0x2c0`，
+说明这是该固件内核的统一布局，而非本模块的偶然。
+
+### CI 如何保证 kmod 与官方固件兼容（v7.0.3 起）
+
+SDK 的 `Config.in` 是重新生成的（BUILDBOT 预设），不保证内核符号默认值与官方镜像
+构建一致。v7.0.3 起 CI 对每个矩阵目标：
+
+1. **对齐**：下载官方发布目录下的 `config.buildinfo`，把其中 `CONFIG_KERNEL_*`
+   段作为覆盖层写进 SDK 的 `.config`（`include/kernel-defaults.mk` 的
+   `Kernel/Configure/Default` 会把它剥前缀合并进内核 `.config`），内核即按
+   官方固件的配置编译；同时安装 `dwarves`（pahole）以支持 BTF 模块构建
+2. **校验**：编译后逐个比对内核 `.config` 与覆盖层，任何符号不符即使作业失败，
+   不允许发出加载不上的 `.ko`；构建缓存键纳入覆盖层指纹，配置一变即重编内核
+3. **自检**：记录 `.ko` 的 `this_module` 区段大小与重定位数到构建日志，便于比对
+
+> [!IMPORTANT]
+> 因此 Release 的 kmod 的可加载范围是：**官方 OpenWrt 24.10.8 / 25.12.5 /
+> ImmortalWrt 与 Release 同期或更新的官方快照固件**。快照滚动更新时内核配置
+> 可能变化，请使用与固件同期或更新的 Release；厂商 / 自建固件的内核配置
+> 无从复现，应继续使用固件自带的模块（或在自己的构建树里更新它）。
 > 
 > 
 
@@ -375,7 +420,12 @@ CI 将针对 **OpenWrt 24.10.x**、**OpenWrt 25.12.x** 以及 **ImmortalWrt mast
 | --- | --- | --- |
 | `sdk-*` | 解压后的 SDK | SDK 下载地址变化 |
 | `feeds-*` | feeds 源码 | 自然周变化 |
-| `build-*` | `build_dir/target-*`、`staging_dir/target-*`（含内核编译产物） | SDK 指纹或内核版本变化 |
+| `build-*` | `build_dir/target-*`、`staging_dir/target-*`（含内核编译产物） | SDK 指纹、内核版本或**官方内核配置覆盖层**变化 |
+
+构建前 CI 会下载官方发布目录的 `config.buildinfo` 并把 `CONFIG_KERNEL_*` 段
+作为覆盖层写进 SDK 的 `.config`，使内核按官方固件的配置编译；编译后逐个符号
+校验内核 `.config` 与覆盖层一致，不一致即使作业失败（详见上文「CI 如何保证
+kmod 与官方固件兼容」）。
 
 构建前会执行 `tools/patch-libffi.py`，修补部分 SDK 树（如 ImmortalWrt master）里 libffi 3.4.7
 `fficonfig.h` 的 staging 缺陷——该缺陷会让依赖闭包中的 libffi 在 `cannot stat` 处中断整个作业。

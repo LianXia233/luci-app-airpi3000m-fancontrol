@@ -58,6 +58,23 @@ find_pwm_path() {
     return 1
 }
 
+# 模块 vermagic 一致却被内核拒绝时，原因几乎总是内核编译配置不同导致的
+# struct module 布局差异（SDK 默认配置 vs 固件配置）。把内核日志里的关键行
+# 打出来并给出可操作结论，而不是一句无法定位的 failed。
+report_driver_load_failure() {
+    local kern
+    kern=$(dmesg 2>/dev/null | tail -n 30)
+    case "$kern" in
+        *".gnu.linkonce.this_module"*)
+            printMsg "module rejected: struct module layout mismatch (vermagic matches, kernel build config differs)"
+            printMsg "the installed airpi-gpio-fan.ko was built against a different kernel than the running one; use the kmod shipped with your firmware, or a release built for this exact firmware, instead of overwriting the firmware's module"
+            ;;
+        *)
+            printMsg "module load failed, recent kernel messages: $(printf '%s' "$kern" | tail -n 3 | tr '\n' ' ')"
+            ;;
+    esac
+}
+
 load_softpwm_driver() {
     local gpio freq duty
     config_get gpio settings fan_gpio "540"
@@ -70,6 +87,7 @@ load_softpwm_driver() {
     if ! insmod airpi-gpio-fan fangpio="$gpio" cycle=255 period="$freq" fanen=1; then
         if ! modprobe airpi_gpio_fan fangpio="$gpio" cycle=255 period="$freq" fanen=1; then
             printMsg "failed to load soft-PWM driver"
+            report_driver_load_failure
             return 1
         fi
     fi

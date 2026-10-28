@@ -4,8 +4,27 @@
 
 ## [未发布]
 
+## [7.0.3] - 2026-10-28
+
 ### 修复
 
+- **Release 的 kmod 在实机上无法加载（`.gnu.linkonce.this_module section size
+  must match`）**：根因是 SDK 的 `Config.in` 为重新生成（BUILDBOT 预设），
+  不保证内核符号默认值与官方镜像构建一致，导致即使 vermagic 完全相同，
+  编出的 `.ko` 的 `struct module` 布局也与官方固件不同。实机取证：固件自带的
+  `.ko` 与 CI 编出的 `.ko` vermagic 一致，但 `this_module` 区段为 `0x2c0`/2 个
+  重定位 vs `0x4c0`/4 个重定位，差 512 字节；固件自带的官方模块 `pwm-fan.ko`
+  同为 `0x2c0`。现在 CI 对每个矩阵目标下载官方发布目录的 `config.buildinfo`，
+  把 `CONFIG_KERNEL_*` 段作为覆盖层写进 SDK 的 `.config`（经
+  `include/kernel-defaults.mk` 合并进内核配置），内核按官方固件配置编译；
+  编译后逐个符号校验内核 `.config` 与覆盖层一致，不符即使作业失败，
+  不再发出加载不上的 `.ko`；构建缓存键纳入覆盖层指纹，配置一变即重编内核。
+  同时安装 `dwarves`（pahole）以支持 BTF 模块构建
+- **模块加载失败的诊断**：`load_softpwm_driver` 失败时原来只记录一句
+  "failed to load soft-PWM driver"。现在会识别内核日志中的
+  `.gnu.linkonce.this_module` 拒绝信息，明确指出「模块与当前内核的编译配置
+  不匹配」并给出处置建议（使用固件自带模块或与固件对应的 Release），
+  其他错误则附带内核日志尾部
 - **ImmortalWrt master 作业失败（v7.0.2 的实际根因）**：`package/libs/libffi` 的
   `Build/InstallDev` 里硬编码了
 
@@ -28,14 +47,20 @@
 ### 变更
 
 - **构建缓存（编译提速）**：新增 `build-*` 缓存，保存 `build_dir/target-*` 与
-  `staging_dir/target-*`（含内核编译产物）。键为「目标 + SDK 指纹 + 内核版本 + 自然周」，
-  命中时直接复用内核与依赖包，只重新编译本仓库的两个包；未命中时退化为全量编译，
-  行为与缓存前一致
+  `staging_dir/target-*`（含内核编译产物）。键为「目标 + SDK 指纹 + 内核版本 +
+  内核配置覆盖层指纹」，命中时直接复用内核与依赖包，只重新编译本仓库的两个包；
+  未命中时退化为全量编译，行为与缓存前一致。覆盖层指纹进键且**不使用
+  restore-keys 前缀回退**：官方配置一变缓存即失效并触发按新配置重编内核，
+  不会恢复到按旧配置编译的内核
 - **缓存时间戳对齐**：缓存恢复会把目录 mtime 写成解压时刻，比缓存里的 stamp 更新，
   make 会误判成源码变更而重编内核。恢复后只把目录（不动文件）时间戳回拨两天，
   保持 stamp 与源码的原有先后关系
 - 作业增加 `timeout-minutes: 180`，避免异常挂起长期占用 runner
 - 生成编译配置后打印 `ffi` 相关条目，便于下次定位同类闭包问题
+- **文档**：README 与 Release 模板补充「内核模块与固件严格对应」的安装警告
+  （固件已内置 `airpi_gpio_fan` 时只装 luci-app，勿覆盖固件模块）、本次
+  `.ko` ABI 取证数据，以及 CI 对齐 / 校验机制的说明；误装后的恢复命令
+  一并写入 Release 模板
 
 ## [7.0.2] - 2026-10-26
 
