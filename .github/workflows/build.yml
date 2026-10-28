@@ -225,11 +225,14 @@ jobs:
           grep -E '^(#[[:space:]]+)?CONFIG_KERNEL_' config.buildinfo \
             | grep -vE "$EXCLUDE" > kernel-config.overlay || true
           # ---- 官方内核配置基准（SDK 自带内核树）----
-          # SDK 里 build_dir/.../linux-<ver> 是按官方镜像配置编好的内核树，其中的
-          # .config 就是「官方固件 ABI 的权威基准」，比 config.buildinfo 里那 17 个
-          # CONFIG_KERNEL_* 包装符号精确得多。构建会按本仓库的顶层 .config 重新
-          # configure 内核（package-metadata.pl 会按包选择增删符号），因此在覆盖
-          # 之前先备份，供 verify 门对照。
+          # SDK 里 build_dir/.../linux-<ver> 是按官方镜像配置编好并且已构建的内核树，
+          # 其中的 .config 就是「官方固件 ABI 的权威基准」，比 config.buildinfo 里
+          # 那 17 个 CONFIG_KERNEL_* 包装符号精确得多。
+          # 实测（run 40768865208/40776003392）：SDK 构建只按本仓库 .config 编各包与
+          # kmod，内核树沿用自带的 .config 与原产物（所以 .ko 的 ABI 天然等于官方，
+          # 上面那份覆盖层只是「要求内核若被重配也必须如此」）。为防这一前提将来
+          # 悄悄变化（例如 Kernel/Configure 被触发、package-metadata 增删符号），
+          # 先把它备份成基准，编译后逐符号对照。
           # 注意：v7.0.3 曾试图在这份 .config 上把 FTRACE/BTF/BPF_EVENTS/
           # TRACING 家族/TREE_LOOKUP 强制成 n，但其中 5 项在内核 Kconfig 层就
           # 不可能为 n（见 README「差异根源」），该门永远失败，已移除。
