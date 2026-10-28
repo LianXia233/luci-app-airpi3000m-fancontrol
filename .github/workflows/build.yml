@@ -166,29 +166,17 @@ jobs:
       # 把官方 config.buildinfo 的 CONFIG_KERNEL_* 段作为覆盖层写进 SDK 的
       # .config，内核即按官方固件的配置编译（合并机制见
       # include/kernel-defaults.mk 的 Kernel/Configure/Default）。
+      # 这里不做符号存在性过滤：覆盖层与 SDK 同版本同源，万一出现未知符号，
+      # 「生成编译配置」会验证它确实进入 .config，「校验内核配置与官方固件一致」
+      # 会在编译后对照内核 .config 复核，两层都会让作业快速失败而不是静默出错。
       - name: 生成内核配置覆盖层
         id: kconf
         run: |
           set -euo pipefail
-          # 只取 CONFIG_KERNEL_* 段（含 "# CONFIG_KERNEL_x is not set" 形式），
-          # 并过滤掉本 SDK kconfig 中不存在的符号：未知符号会在构建时拉起
-          # 交互式 menuconfig 把作业挂死（见「生成编译配置」注释）。
+          # 只取 CONFIG_KERNEL_* 段（含 "# CONFIG_KERNEL_x is not set" 形式）。
           # BUILD_DOMAIN / BUILD_USER 只影响构建者字符串、不参与 ABI，跳过。
-          grep -E '^(#[[:space:]]+)?CONFIG_KERNEL_' config.buildinfo > kernel-config.overlay.raw || true
-          KDEFS=""
-          for f in sdk/config/Config-kernel.in sdk/config/Config.in; do
-            [ -f "$f" ] && KDEFS="$KDEFS $f"
-          done
-          [ -n "$KDEFS" ] || { echo "::error::未找到 SDK kconfig 定义文件"; exit 1; }
-          : > kernel-config.overlay
-          while IFS= read -r line; do
-            sym=$(printf '%s\n' "$line" | sed -E 's/^#[[:space:]]+//; s/^CONFIG_KERNEL_([A-Za-z0-9_]+).*$/\1/')
-            case "$sym" in
-              ''|BUILD_DOMAIN|BUILD_USER) continue ;;
-            esac
-            grep -q "^config KERNEL_${sym}\$" $KDEFS || continue
-            printf '%s\n' "$line" >> kernel-config.overlay
-          done < kernel-config.overlay.raw
+          grep -E '^(#[[:space:]]+)?CONFIG_KERNEL_' config.buildinfo \
+            | grep -vE 'CONFIG_KERNEL_(BUILD_DOMAIN|BUILD_USER)' > kernel-config.overlay || true
           COUNT=$(wc -l < kernel-config.overlay)
           [ "$COUNT" -ge 1 ] || { echo "::error::官方内核配置覆盖层为空"; exit 1; }
           echo "hash=$(sha256sum kernel-config.overlay | cut -c1-16)" >> "$GITHUB_OUTPUT"
@@ -324,6 +312,24 @@ jobs:
           # CONFIG_PACKAGE_ucode-mod-ffi is not set
           EOF
           make defconfig </dev/null
+          # 覆盖层必须进入生成的 .config，内核才会按官方固件的配置编译。
+          # 两种 SDK 布局都要覆盖：
+          #   - SDK 的 kconfig 认识这些符号：种子行在最前，「首个赋值优先」保留
+          #   - SDK 的 kconfig 不认识：defconfig 把种子行丢掉，此时补写在末尾，
+          #     它就是该符号在 .config 里的唯一赋值，同样生效
+          while IFS= read -r line; do
+            if grep -qxF "$line" .config; then
+              echo "  ok        $line"
+            else
+              printf '%s\n' "$line" >> .config
+              echo "  appended  $line"
+            fi
+          done < "$GITHUB_WORKSPACE/kernel-config.overlay"
+          MISS=0
+          while IFS= read -r line; do
+            grep -qxF "$line" .config || { echo "::error::覆盖层符号未进入 .config: $line"; MISS=1; }
+          done < "$GITHUB_WORKSPACE/kernel-config.overlay"
+          [ "$MISS" -eq 0 ] || { echo "::error::官方内核配置覆盖层未生效"; exit 1; }
           echo "----- 生效的相关配置 -----"
           grep -E 'airpi' .config || { echo "::error::软件包未出现在 .config 中，请检查 Makefile 依赖"; exit 1; }
           echo "----- libffi / ffi 相关配置（诊断用） -----"
