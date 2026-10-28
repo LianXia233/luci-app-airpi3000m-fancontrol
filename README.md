@@ -423,9 +423,10 @@ CI 将针对 **OpenWrt 24.10.x**、**OpenWrt 25.12.x** 以及 **ImmortalWrt mast
 | `build-*` | `build_dir/target-*`、`staging_dir/target-*`（含内核编译产物） | SDK 指纹、内核版本或**官方内核配置覆盖层**变化 |
 
 构建前 CI 会下载官方发布目录的 `config.buildinfo` 并把 `CONFIG_KERNEL_*` 段
-作为覆盖层写进 SDK 的 `.config`，使内核按官方固件的配置编译；编译后逐个符号
-校验内核 `.config` 与覆盖层一致，不一致即使作业失败（详见上文「CI 如何保证
-kmod 与官方固件兼容」）。
+作为覆盖层写进 SDK 的 `.config`，使内核按官方固件的配置编译；同时裁掉 filogic
+目标配置中的 MediaTek 厂商驱动（影响 struct module 布局与 vermagic 的框架
+符号全部保留，`.ko` 的 ABI 不变）；编译后逐个符号校验内核 `.config` 与覆盖层
+一致，不一致即使作业失败（详见上文「CI 如何保证 kmod 与官方固件兼容」）。
 
 构建前会执行 `tools/patch-libffi.py`，修补部分 SDK 树（如 ImmortalWrt master）里 libffi 3.4.7
 `fficonfig.h` 的 staging 缺陷——该缺陷会让依赖闭包中的 libffi 在 `cannot stat` 处中断整个作业。

@@ -23,17 +23,25 @@ env:
   PKG_ARCH: aarch64_cortex-a53
 
 jobs:
-  # 三个矩阵目标共享同一套流程。耗时大头是 package/kernel/linux 的内核全量编译
-  # （kmod-airpi-gpio-fan 必须对着目标内核构建），单次约 95 分钟。
-  # 因此除 SDK / feeds 缓存外，再按「目标 + SDK 指纹 + 内核版本 + 内核配置
-  # 覆盖层指纹」缓存 build_dir/target-* 与 staging_dir/target-*：命中时内核与
-  # 依赖包直接复用，整体从约 100 分钟降到数分钟；未命中时退化为全量编译，
-  # 行为不变。覆盖层取自官方固件的 config.buildinfo（见「生成内核配置覆盖层」），
-  # 它的指纹进键是为了保证内核配置一变就重编，不会被旧配置的内核缓存蒙混过关。
-  # 另外生成编译配置时显式关闭 ALL_KMODS / ALL_NONSHARED / ALL（SDK 默认 y），
-  # 否则 package/kernel/linux 会全量编译数千个无关内核模块（约 2 小时），
-  # 且 lucihttp lua 变体、ucode-mod-ffi(+libffi) 等无关组件会被拖进闭包。
-  # 本应用是 JS + ucode + Rust 架构，构建闭包中不保留任何 lua 组件。
+  # 三个矩阵目标共享同一套流程。实测耗时构成（v7.0.2 冷构建 1h34m）：
+  #   - package/kernel/linux 约 33 分钟：Kernel/CompileModules 固定跑
+  #     `all modules`，`all` 会编出整个 vmlinux（含目标配置的数百个 =y
+  #     设备驱动 + DWARF + BTF），本插件的 .ko 一个都用不到
+  #   - luci-base 依赖闭包 + SDK 默认包（约 35 个）约 8 分钟
+  #   - 其余为 SDK 解压、feeds、Rust 等固定开销
+  # 因此做四层优化：
+  #   1. 裁剪 filogic 目标配置的设备驱动（generic 核心配置原样保留，
+  #      struct module 布局只取决于后者与 CONFIG_KERNEL_* 覆盖层），
+  #      vmlinux 只剩核心，内核阶段降到分钟级
+  #   2. CONFIG_CCACHE=y + 缓存 .ccache：内核版本升级（master 快照常见）
+  #      时绝大多数对象命中，重编降到约 5-10 分钟
+  #   3. build-* 缓存 build_dir/staging_dir：输入不变时整个内核与闭包
+  #      直接复用，单作业约 8 分钟
+  #   4. 关闭 SDK 的 ALL/ALL_KMODS/ALL_NONSHARED 默认并裁掉无关默认包，
+  #      依赖闭包只含本应用真实依赖
+  # 注意 build-* 缓存必须用精确键（SDK 指纹 + 内核版本 + 内核配置指纹），
+  # 不能用 restore-keys 前缀回退——回退会复用旧配置编译的内核，让
+  # 「生成内核配置覆盖层」静默失效，编出与官方固件不兼容的 .ko。
   build:
     name: 📦 编译 ${{ matrix.tag }} (${{ matrix.version }})
     runs-on: ubuntu-24.04
@@ -126,7 +134,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: sdk
-          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile', '.github/workflows/build.yml') }}
+          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile') }}
           restore-keys: |
             sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-
 
@@ -145,7 +153,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: sdk
-          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile', '.github/workflows/build.yml') }}
+          key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile') }}
 
       - name: 解析内核版本
         id: kver
@@ -173,15 +181,65 @@ jobs:
         id: kconf
         run: |
           set -euo pipefail
+          # ---- 裁剪 filogic 目标配置里的 MediaTek 厂商驱动 ----
+          # Kernel/CompileModules 跑 `all modules`，`all` 会编译整个 vmlinux，
+          # 目标配置里的厂商驱动（以太网/WED/NAND/时钟/pinctrl/PHY 等）占内核
+          # 阶段相当一部分时间，本插件的 .ko 一个都用不到（符号在 insmod 时才
+          # 向运行内核解析，编译期只需核心头文件）。
+          # 只裁符号名含厂商 token（MEDIATEK/MTK/MT76/MT79/MT798/AIROHA/AN8855）
+          # 的 =y 驱动，其余（SMP/PWM/HWMON/MODULES_TREE_LOOKUP 等框架与核心，
+          # 其中部分会影响 struct module 布局与 vermagic）一律保留——宁可少裁
+          # 也不能破坏与官方固件的 ABI。CONFIG_ARCH_* 是架构核心，始终保留。
+          PRUNED=0
+          for f in sdk/target/linux/mediatek/filogic/config-6.*; do
+            [ -f "$f" ] || continue
+            tmp="$f.tmp"
+            : > "$tmp"
+            while IFS= read -r line; do
+              case "$line" in
+                CONFIG_*=y)
+                  sym=${line%%=y}
+                  case "$sym" in
+                    *MEDIATEK*|*MTK*|*MT76*|*MT79*|*MT798*|*AIROHA*|*AN8855*)
+                      case "$sym" in
+                        CONFIG_ARCH_*) printf '%s\n' "$line" >> "$tmp" ;;
+                        *)
+                          printf '# %s is not set\n' "$sym" >> "$tmp"
+                          PRUNED=$((PRUNED+1))
+                          ;;
+                      esac
+                      ;;
+                    *) printf '%s\n' "$line" >> "$tmp" ;;
+                  esac
+                  ;;
+                *) printf '%s\n' "$line" >> "$tmp" ;;
+              esac
+            done < "$f"
+            mv "$tmp" "$f"
+          done
+          echo "已裁剪 filogic 厂商驱动 $PRUNED 项"
+          # ---- 官方内核配置覆盖层 ----
           # 只取 CONFIG_KERNEL_* 段（含 "# CONFIG_KERNEL_x is not set" 形式）。
           # BUILD_DOMAIN / BUILD_USER 只影响构建者字符串、不参与 ABI，跳过。
           grep -E '^(#[[:space:]]+)?CONFIG_KERNEL_' config.buildinfo \
             | grep -vE 'CONFIG_KERNEL_(BUILD_DOMAIN|BUILD_USER)' > kernel-config.overlay || true
           COUNT=$(wc -l < kernel-config.overlay)
           [ "$COUNT" -ge 1 ] || { echo "::error::官方内核配置覆盖层为空"; exit 1; }
-          echo "hash=$(sha256sum kernel-config.overlay | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # 指纹 = 覆盖层 + 裁剪后的目标配置：任一变化都使 build 缓存失效
+          echo "hash=$({ cat kernel-config.overlay; cat sdk/target/linux/mediatek/filogic/config-6.*; } | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "----- 内核配置覆盖层（$COUNT 项，来源 ${{ steps.sdkurl.outputs.config }}）-----"
           cat kernel-config.overlay
+
+      # ccache 只影响速度、不影响产物内容（同一编译器+参数产出一致的对象文件），
+      # 因此按自然周滚动、可用 restore-keys 前缀回退到上周的温缓存：
+      # master 快照升级内核版本（约每 1-2 周）触发重编时，绝大多数对象直接命中。
+      - name: 恢复 ccache 缓存
+        uses: actions/cache/restore@v4
+        with:
+          path: sdk/.ccache
+          key: ccache-${{ matrix.tag }}-${{ steps.bucket.outputs.week }}
+          restore-keys: |
+            ccache-${{ matrix.tag }}-
 
       - name: 恢复 feeds 缓存
         id: cache-feeds
@@ -288,6 +346,7 @@ jobs:
           rm -f .config
           cat "$GITHUB_WORKSPACE/kernel-config.overlay" > .config
           cat >> .config <<'EOF'
+          CONFIG_CCACHE=y
           CONFIG_PACKAGE_luci-app-airpi-fancontrol=m
           CONFIG_PACKAGE_kmod-airpi-gpio-fan=m
           # SDK 的 Config.in 把 ALL 默认置 y（BUILDBOT 预设），连带
@@ -310,6 +369,15 @@ jobs:
           # CONFIG_PACKAGE_liblucihttp-lua is not set
           # CONFIG_PACKAGE_luci-lib-base is not set
           # CONFIG_PACKAGE_ucode-mod-ffi is not set
+          # SDK defconfig 会把 DEFAULT=y 的基础包拖进闭包（约 35 个，其中
+          # util-linux/mtd-utils 等明显与本插件无关，单项即 1-2 分钟）。
+          # 显式裁掉；若某项实际是真实依赖，defconfig 会重新选中，无副作用。
+          # CONFIG_PACKAGE_dnsmasq is not set
+          # CONFIG_PACKAGE_odhcpd is not set
+          # CONFIG_PACKAGE_firewall4 is not set
+          # CONFIG_PACKAGE_linux-firmware is not set
+          # CONFIG_PACKAGE_mtd-utils is not set
+          # CONFIG_PACKAGE_util-linux is not set
           EOF
           make defconfig </dev/null
           # 覆盖层必须进入生成的 .config，内核才会按官方固件的配置编译。
@@ -332,6 +400,7 @@ jobs:
           [ "$MISS" -eq 0 ] || { echo "::error::官方内核配置覆盖层未生效"; exit 1; }
           echo "----- 生效的相关配置 -----"
           grep -E 'airpi' .config || { echo "::error::软件包未出现在 .config 中，请检查 Makefile 依赖"; exit 1; }
+          grep -E '^CONFIG_CCACHE=' .config || { echo "::error::CONFIG_CCACHE 未生效，请检查 SDK 的 config/Config-devel.in"; exit 1; }
           echo "----- libffi / ffi 相关配置（诊断用） -----"
           grep -E 'ffi' .config || echo "（无 ffi 相关条目）"
           # 退役 lua 校验:若下列组件仍被 kconfig 选中,说明依赖树里还有隐藏的
@@ -371,6 +440,15 @@ jobs:
             echo "::error::kmod 首次编译失败,以 V=s 重跑以获取诊断信息"
             make package/airpi-gpio-fan/compile V=s -j1 </dev/null
           fi
+
+      # 保存失败（同 key 已存在/目录不存在）不应让作业变红
+      - name: 保存 ccache 缓存
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: sdk/.ccache
+          key: ccache-${{ matrix.tag }}-${{ steps.bucket.outputs.week }}
 
       # 编译后校验：覆盖层里的每个符号都必须按预期值出现在内核 .config 中。
       # 二者一致即证明 .ko 与官方固件的内核配置逐位相同（同一 SDK 指纹下 target

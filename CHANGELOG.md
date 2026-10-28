@@ -46,6 +46,26 @@
 
 ### 变更
 
+- **构建提速（v7.0.2 冷构建 1h34m 的实测剖析）**：对上次成功作业逐步骤计时后发现
+  耗时大头并非「编译模块」，而是三块：`package/kernel/linux` 约 33 分钟
+  （`Kernel/CompileModules` 固定跑 `all modules`，`all` 会编出整个 vmlinux，
+  含 filogic 目标配置的数百个 `=y` 设备驱动 + DWARF + BTF）、luci-base 依赖
+  闭包与 SDK 默认包约 8 分钟、SDK/feeds/Rust 固定开销数分钟。针对性优化：
+  - **裁剪目标厂商驱动**：`Kernel/CompileModules` 固定跑 `all modules`，
+    `all` 会编出整个 vmlinux，filogic `config-6.x` 里的 60 项 MediaTek 厂商
+    驱动（以太网/WED/NAND/时钟/pinctrl/PHY 等）全部参与编译却与 `.ko` 无关
+    （符号在 insmod 时才向运行内核解析）。CI 显式 not-set 这批驱动——只按
+    厂商 token（MEDIATEK/MTK/MT76/MT79/MT798/AIROHA/AN8855）匹配，
+    SMP/PWM/HWMON/MODULES_TREE_LOOKUP 等会影响 struct module 布局与
+    vermagic 的框架符号一律保留，`.ko` 与官方固件 ABI 不变
+  - **ccache**：`CONFIG_CCACHE=y` 并缓存 `sdk/.ccache`（按周滚动、可回退）。
+    master 快照升级内核版本触发重编时绝大多数对象命中，约 5–10 分钟
+  - **裁剪无关默认包**：`dnsmasq`/`odhcpd`/`firewall4`/`linux-firmware`/
+    `mtd-utils`/`util-linux` 等明显与本插件无关的 DEFAULT 包显式 not-set；
+    若实际是真实依赖，defconfig 会重新选中，无副作用
+  - **SDK 缓存键收窄**：不再随 workflow 文件变化失效，避免每次改 CI 都重新
+    下载 480MB SDK
+  - build 缓存键包含「覆盖层 + 裁剪后目标配置」指纹，内核配置一变即重编
 - **构建缓存（编译提速）**：新增 `build-*` 缓存，保存 `build_dir/target-*` 与
   `staging_dir/target-*`（含内核编译产物）。键为「目标 + SDK 指纹 + 内核版本 +
   内核配置覆盖层指纹」，命中时直接复用内核与依赖包，只重新编译本仓库的两个包；
