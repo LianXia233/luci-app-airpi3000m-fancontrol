@@ -388,7 +388,13 @@ SDK 的 `Config.in` 是重新生成的（BUILDBOT 预设），不保证内核符
    官方固件的配置编译；同时安装 `dwarves`（pahole）以支持 BTF 模块构建
 2. **校验**：编译后逐个比对内核 `.config` 与覆盖层，任何符号不符即使作业失败，
    不允许发出加载不上的 `.ko`；构建缓存键纳入覆盖层指纹，配置一变即重编内核
-3. **自检**：记录 `.ko` 的 `this_module` 区段大小与重定位数到构建日志，便于比对
+3. **ABI 强制（仅 master 快照目标）**：master 是滚动快照，其 buildinfo 描述
+   「今天」的构建配置；已实测的 2026-10-22 固件 `.ko` 为 `this_module=0x2c0`、
+   无 `.BTF`，对应 `DEBUG_INFO_BTF(_MODULES)`、`EVENT_TRACING`、
+   `MODULES_TREE_LOOKUP` 三项为 n（其中两项是内核内部符号，不经
+   `CONFIG_KERNEL_*` 包装，直接写入目标配置）。verify 门强制校验这三项；
+   固件 ABI 的观测量（区段大小 / 重定位数）每次构建都会打印在 verify 日志
+4. **自检**：记录 `.ko` 的 `this_module` 区段大小与重定位数到构建日志，便于比对
 
 > [!IMPORTANT]
 > 因此 Release 的 kmod 的可加载范围是：**官方 OpenWrt 24.10.8 / 25.12.5 /

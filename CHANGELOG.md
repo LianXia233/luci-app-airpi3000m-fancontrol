@@ -20,6 +20,17 @@
   编译后逐个符号校验内核 `.config` 与覆盖层一致，不符即使作业失败，
   不再发出加载不上的 `.ko`；构建缓存键纳入覆盖层指纹，配置一变即重编内核。
   同时安装 `dwarves`（pahole）以支持 BTF 模块构建
+- **ABI 强制项（master 快照目标）**：首轮验证发现，仅对齐 `CONFIG_KERNEL_*`
+  仍不够——新 .ko 的 `this_module` 依旧 0x4c0（固件 0x2c0），512 字节差值
+  恰为 README 实证记录的 `DEBUG_INFO_BTF_MODULES`(64) + `EVENT_TRACING`(64) +
+  `MODULES_TREE_LOOKUP`(384)。根因：master 是滚动快照，buildinfo 描述
+  「今天」的 buildbot 配置（BTF 已翻为 y），而用户设备固件（2026-10-22
+  快照）的 `.ko` 无 `.BTF`、这三项为 n；且其中两项是内核内部符号，不经
+  `CONFIG_KERNEL_*` 包装。现在 master 目标强制 `DEBUG_INFO_BTF(_MODULES)=n`
+  （覆盖层内改写）与 `MODULES_TREE_LOOKUP=n`、`EVENT_TRACING=n`（直接写入
+  目标配置），verify 门同时校验强制项生效。24.10 / 25.12 为固定发布版，
+  其 buildinfo 即固件真实配置，无需强制。若官方快照内核配置再变，verify
+  日志中的 `this_module` 观测量会先于用户暴露偏差
 - **模块加载失败的诊断**：`load_softpwm_driver` 失败时原来只记录一句
   "failed to load soft-PWM driver"。现在会识别内核日志中的
   `.gnu.linkonce.this_module` 拒绝信息，明确指出「模块与当前内核的编译配置

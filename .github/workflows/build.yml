@@ -62,10 +62,13 @@ jobs:
             tag: 'apk'
           # immortalwrt master 快照 SDK(当前为 kernel 6.18),用于验证最新内核适配
           # config.buildinfo 与 SDK 取自同一次快照（同一目录），避免两者跨越更新
+          # firmware_abi_override: master 是滚动快照，buildinfo 描述的是「今天」的
+          #   buildbot 配置，而用户设备固件是更早的快照；对已实测固件做 ABI 强制
           - version: 'ImmortalWrt master'
             sdk_url: ''
             config_url: ''
             tag: 'immortalwrt-master'
+            firmware_abi_override: 'true'
 
     steps:
       - name: 记录开始时间
@@ -223,6 +226,36 @@ jobs:
           # BUILD_DOMAIN / BUILD_USER 只影响构建者字符串、不参与 ABI，跳过。
           grep -E '^(#[[:space:]]+)?CONFIG_KERNEL_' config.buildinfo \
             | grep -vE 'CONFIG_KERNEL_(BUILD_DOMAIN|BUILD_USER)' > kernel-config.overlay || true
+          # ---- 与已发布固件对齐的 ABI 强制项（仅 firmware_abi_override 目标）----
+          # 实机取证（2026-10-28，ImmortalWrt 2026-10-22 快照固件 / 内核 6.18.55）：
+          # 固件自带 .ko 的 this_module = 0x2c0（704 字节）、2 个重定位、无 .BTF；
+          # 而 CI 按当日 buildinfo 覆盖层编出的 .ko 是 0x4c0（1216 字节）。
+          # 差值 512 字节 = DEBUG_INFO_BTF_MODULES(64) + EVENT_TRACING(64) +
+          # MODULES_TREE_LOOKUP(384)，即固件构建时这三项为 n，而滚动快照
+          # buildinfo 的 BTF 已翻成 y。前两项是内核内部符号（不经 CONFIG_KERNEL_*
+          # 包装），只能直接写进目标配置；BTF 两项在覆盖层里强制 not-set。
+          # 这些值经 verify 门与实机加载双重验证；若官方快照内核配置再变
+          # （this_module 尺寸会打印在 verify 日志），需按新固件重新校准。
+          FORCED="$GITHUB_WORKSPACE/kernel-config.forced"
+          : > "$FORCED"
+          if [ "${{ matrix.firmware_abi_override }}" = "true" ]; then
+            sed -i -E \
+              -e 's/^CONFIG_KERNEL_DEBUG_INFO_BTF=y/# CONFIG_KERNEL_DEBUG_INFO_BTF is not set/' \
+              -e 's/^CONFIG_KERNEL_DEBUG_INFO_BTF_MODULES=y/# CONFIG_KERNEL_DEBUG_INFO_BTF_MODULES is not set/' \
+              kernel-config.overlay
+            for f in sdk/target/linux/mediatek/filogic/config-6.*; do
+              [ -f "$f" ] || continue
+              grep -q "CONFIG_MODULES_TREE_LOOKUP" "$f" || \
+                echo "# CONFIG_MODULES_TREE_LOOKUP is not set" >> "$f"
+              grep -q "CONFIG_EVENT_TRACING" "$f" || \
+                echo "# CONFIG_EVENT_TRACING is not set" >> "$f"
+            done
+            {
+              echo "# CONFIG_MODULES_TREE_LOOKUP is not set"
+              echo "# CONFIG_EVENT_TRACING is not set"
+            } >> "$FORCED"
+            echo "已对已发布固件强制 ABI 项：MODULES_TREE_LOOKUP=n EVENT_TRACING=n DEBUG_INFO_BTF(_MODULES)=n"
+          fi
           COUNT=$(wc -l < kernel-config.overlay)
           [ "$COUNT" -ge 1 ] || { echo "::error::官方内核配置覆盖层为空"; exit 1; }
           # 指纹 = 覆盖层 + 裁剪后的目标配置：任一变化都使 build 缓存失效
@@ -489,6 +522,23 @@ jobs:
                 ;;
             esac
           done < "$GITHUB_WORKSPACE/kernel-config.overlay"
+
+          # ABI 强制项（firmware_abi_override 目标）：这些是内核内部符号，
+          # 不在覆盖层里，必须以 not-set 形式出现在内核 .config 中
+          if [ -s "$GITHUB_WORKSPACE/kernel-config.forced" ]; then
+            while IFS= read -r line; do
+              sym=$(printf '%s\n' "$line" | sed -E 's/^#[[:space:]]+//; s/^CONFIG_([A-Za-z0-9_]+).*$/\1/')
+              if grep -qxF "$line" "$KCONF"; then
+                echo "  ok  (强制) $line"
+              elif grep -qE "^CONFIG_${sym}=" "$KCONF"; then
+                echo "::error::ABI 强制项应未设置，实际 $(grep -E "^CONFIG_${sym}=" "$KCONF" | head -1)"
+                FAIL=1
+              else
+                echo "::error::ABI 强制项未出现在内核 .config: $line"
+                FAIL=1
+              fi
+            done < "$GITHUB_WORKSPACE/kernel-config.forced"
+          fi
 
           # .ko 的 ABI 观测量：this_module 区段大小与重定位数。官方固件的参考值
           # 见 README「差异根源」一节；这里记录到日志，便于发布前人工比对。
