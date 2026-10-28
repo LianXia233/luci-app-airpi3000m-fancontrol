@@ -223,43 +223,60 @@ jobs:
           echo "已裁剪 filogic 厂商驱动 $PRUNED 项"
           # ---- 官方内核配置覆盖层 ----
           # 只取 CONFIG_KERNEL_* 段（含 "# CONFIG_KERNEL_x is not set" 形式）。
-          # BUILD_DOMAIN / BUILD_USER 只影响构建者字符串、不参与 ABI，跳过。
+          # BUILD_DOMAIN / BUILD_USER 只影响构建者字符串、不参与 ABI，跳过；
+          # firmware_abi_override 目标还要排除将被强制项覆盖的符号（见下），
+          # 否则 verify 门会出现「覆盖层要求 =y、强制项要求 =n」的自相矛盾。
+          if [ "${{ matrix.firmware_abi_override }}" = "true" ]; then
+            EXCLUDE='CONFIG_KERNEL_(BUILD_DOMAIN|BUILD_USER|DEBUG_INFO_BTF|DEBUG_INFO_BTF_MODULES|FTRACE|BPF_EVENTS|KPROBE_EVENTS|MODULE_ALLOW_BTF_MISMATCH)'
+          else
+            EXCLUDE='CONFIG_KERNEL_(BUILD_DOMAIN|BUILD_USER)'
+          fi
           grep -E '^(#[[:space:]]+)?CONFIG_KERNEL_' config.buildinfo \
-            | grep -vE 'CONFIG_KERNEL_(BUILD_DOMAIN|BUILD_USER)' > kernel-config.overlay || true
+            | grep -vE "$EXCLUDE" > kernel-config.overlay || true
           # ---- 与已发布固件对齐的 ABI 强制项（仅 firmware_abi_override 目标）----
-          # 实机取证（2026-10-28，ImmortalWrt 2026-10-22 快照固件 / 内核 6.18.55）：
-          # 固件自带 .ko 的 this_module = 0x2c0（704 字节）、2 个重定位、无 .BTF；
-          # 而 CI 按当日 buildinfo 覆盖层编出的 .ko 是 0x4c0（1216 字节）。
-          # 差值 512 字节 = DEBUG_INFO_BTF_MODULES(64) + EVENT_TRACING(64) +
-          # MODULES_TREE_LOOKUP(384)，即固件构建时这三项为 n，而滚动快照
-          # buildinfo 的 BTF 已翻成 y。前两项是内核内部符号（不经 CONFIG_KERNEL_*
-          # 包装），只能直接写进目标配置；BTF 两项在覆盖层里强制 not-set。
-          # 这些值经 verify 门与实机加载双重验证；若官方快照内核配置再变
-          # （this_module 尺寸会打印在 verify 日志），需按新固件重新校准。
+          # 实机取证（2026-10-28/29，ImmortalWrt 2026-10-22 快照固件 / 内核 6.18.55）：
+          # 固件自带 .ko 的 this_module = 0x2c0（704 字节）、无 .BTF；当日 SDK
+          # 默认编出的 .ko 是 0x4c0（1216 字节），差 512 字节。README「差异根源」
+          # 的实证对应：MODULES_TREE_LOOKUP(-384)、BTF_MODULES(-64)、
+          # FTRACE/TRACEPOINTS 家族(-64)，且固件 BPF_EVENTS=n（否则 exit 偏移
+          # 后移 16 字节出现 [permanent] 模块）。其中 EVENT_TRACING 被内核
+          # kernel/trace/Kconfig 的 select 强制，必须连同选择者（FTRACE→TRACING
+          # 家族）一起关闭，仅写 .config 无效。
+          # 这些符号多数不经 CONFIG_KERNEL_* 包装，且 OpenWrt 的 conf 以
+          # 「首个赋值优先」处理重复行、内核 conf 以「末个赋值」处理——任何
+          # 「追加」式注入都不可靠。因此把期望值写入 kernel-config.forced，
+          # 由 kernel-config-force.sh（经 patch-kernel-defaults.py 钩在
+          # Kernel/Configure/Default 的合并之后）以「先删后写」保证唯一赋值。
+          # 若官方快照内核配置再变，verify 门的 this_module 观测量会先于用户暴露偏差。
           FORCED="$GITHUB_WORKSPACE/kernel-config.forced"
           : > "$FORCED"
+          install -m 0755 "$GITHUB_WORKSPACE/pkgsrc/tools/kernel-config-force.sh" sdk/kernel-config-force.sh
           if [ "${{ matrix.firmware_abi_override }}" = "true" ]; then
-            sed -i -E \
-              -e 's/^CONFIG_KERNEL_DEBUG_INFO_BTF=y/# CONFIG_KERNEL_DEBUG_INFO_BTF is not set/' \
-              -e 's/^CONFIG_KERNEL_DEBUG_INFO_BTF_MODULES=y/# CONFIG_KERNEL_DEBUG_INFO_BTF_MODULES is not set/' \
-              kernel-config.overlay
+            cat > "$FORCED" <<'EOF'
+          # CONFIG_FTRACE is not set
+          # CONFIG_DEBUG_INFO_BTF is not set
+          # CONFIG_DEBUG_INFO_BTF_MODULES is not set
+          # CONFIG_BPF_EVENTS is not set
+          # CONFIG_MODULES_TREE_LOOKUP is not set
+          # CONFIG_EVENT_TRACING is not set
+          # CONFIG_TRACING is not set
+          # CONFIG_TRACEPOINTS is not set
+          EOF
+            # 纵深防御：filogic 目标配置里 TREE_LOOKUP 既有 =y 也一并替换
+            sed -i 's/^CONFIG_MODULES_TREE_LOOKUP=y$/# CONFIG_MODULES_TREE_LOOKUP is not set/' \
+              sdk/target/linux/mediatek/filogic/config-6.* || true
             for f in sdk/target/linux/mediatek/filogic/config-6.*; do
-              [ -f "$f" ] || continue
               grep -q "CONFIG_MODULES_TREE_LOOKUP" "$f" || \
                 echo "# CONFIG_MODULES_TREE_LOOKUP is not set" >> "$f"
-              grep -q "CONFIG_EVENT_TRACING" "$f" || \
-                echo "# CONFIG_EVENT_TRACING is not set" >> "$f"
             done
-            {
-              echo "# CONFIG_MODULES_TREE_LOOKUP is not set"
-              echo "# CONFIG_EVENT_TRACING is not set"
-            } >> "$FORCED"
-            echo "已对已发布固件强制 ABI 项：MODULES_TREE_LOOKUP=n EVENT_TRACING=n DEBUG_INFO_BTF(_MODULES)=n"
+            echo "已对已发布固件强制 ABI 项（kernel-config.forced）：FTRACE/BTF/BPF_EVENTS/TRACING 家族/MODULES_TREE_LOOKUP = n"
           fi
+          cp "$FORCED" sdk/kernel-config.forced
+          python3 "$GITHUB_WORKSPACE/pkgsrc/tools/patch-kernel-defaults.py" "$GITHUB_WORKSPACE/sdk"
           COUNT=$(wc -l < kernel-config.overlay)
           [ "$COUNT" -ge 1 ] || { echo "::error::官方内核配置覆盖层为空"; exit 1; }
-          # 指纹 = 覆盖层 + 裁剪后的目标配置：任一变化都使 build 缓存失效
-          echo "hash=$({ cat kernel-config.overlay; cat sdk/target/linux/mediatek/filogic/config-6.*; } | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # 指纹 = 覆盖层 + 强制项 + 裁剪后的目标配置：任一变化都使 build 缓存失效
+          echo "hash=$({ cat kernel-config.overlay; cat kernel-config.forced; cat sdk/target/linux/mediatek/filogic/config-6.*; } | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "----- 内核配置覆盖层（$COUNT 项，来源 ${{ steps.sdkurl.outputs.config }}）-----"
           cat kernel-config.overlay
 
@@ -413,18 +430,18 @@ jobs:
           # CONFIG_PACKAGE_util-linux is not set
           EOF
           make defconfig </dev/null
-          # 覆盖层必须进入生成的 .config，内核才会按官方固件的配置编译。
-          # 两种 SDK 布局都要覆盖：
-          #   - SDK 的 kconfig 认识这些符号：种子行在最前，「首个赋值优先」保留
-          #   - SDK 的 kconfig 不认识：defconfig 把种子行丢掉，此时补写在末尾，
-          #     它就是该符号在 .config 里的唯一赋值，同样生效
+          # 覆盖层的每个符号都必须以「唯一赋值」进入生成的 .config。
+          # 必须先删后写：OpenWrt 的 conf 对重复出现的符号取「首个赋值」，
+          # defconfig 可能已经按默认值写过 =y（首轮验证中 DEBUG_INFO_BTF
+          # 即如此），在末尾追加 not-set 会被压掉。删光该符号的所有赋值
+          # 再写入期望行，后续任何 conf 重跑都不会翻转。
           while IFS= read -r line; do
-            if grep -qxF "$line" .config; then
-              echo "  ok        $line"
-            else
-              printf '%s\n' "$line" >> .config
-              echo "  appended  $line"
-            fi
+            sym=$(printf '%s\n' "$line" | sed -E 's/^#[[:space:]]+//; s/^CONFIG_([A-Za-z0-9_]+).*$/\1/')
+            { grep -vE "^CONFIG_${sym}=" .config || true; } | \
+              { grep -vE "^# CONFIG_${sym} is not set" || true; } > .config.tmp
+            mv .config.tmp .config
+            printf '%s\n' "$line" >> .config
+            echo "  set  $line"
           done < "$GITHUB_WORKSPACE/kernel-config.overlay"
           MISS=0
           while IFS= read -r line; do
@@ -552,6 +569,14 @@ jobs:
           fi
 
           [ "$FAIL" -eq 0 ] || { echo "::error::内核配置与官方固件不一致，终止发布"; exit 1; }
+
+          # 裁剪生效性诊断：厂商驱动应已从内核配置消失（只影响速度，不影响
+          # ABI，故仅告警不失败；若出现说明 Configure 未吃到裁剪后的配置）
+          if grep -qE "^CONFIG_(NET_MEDIATEK_SOC|MEDIATEK_GE_PHY|PINCTRL_MT7981)=" "$KCONF"; then
+            echo "::warning::厂商驱动仍在内核配置中，裁剪未生效"
+          else
+            echo "  ok  厂商驱动裁剪已生效"
+          fi
           echo "内核配置与官方固件一致"
 
       # 内核与依赖包的编译产物是本次运行最贵的产出,缓存下来给后续运行复用。
