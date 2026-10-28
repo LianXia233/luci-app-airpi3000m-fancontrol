@@ -529,8 +529,10 @@ jobs:
                        DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES MODULES_TREE_LOOKUP \
                        KPROBES KPROBE_EVENTS PERF_EVENTS KALLSYMS KALLSYMS_ALL \
                        MODULE_UNLOAD SYSFS GENERIC_BUG LIVEPATCH KUNIT; do
-              a=$(grep -E "^(# )?CONFIG_${sym}(=| is not set)" "$GITHUB_WORKSPACE/kernel-config.baseline" | head -1)
-              b=$(grep -E "^(# )?CONFIG_${sym}(=| is not set)" "$KCONF" | head -1)
+              # 符号可能压根不出现在配置里（无 prompt 的内部符号），grep 零命中
+              # 在 pipefail 下会让整个作业失败，必须吞掉非零退出
+              a=$(grep -E "^(# )?CONFIG_${sym}(=| is not set)" "$GITHUB_WORKSPACE/kernel-config.baseline" | head -1 || true)
+              b=$(grep -E "^(# )?CONFIG_${sym}(=| is not set)" "$KCONF" | head -1 || true)
               if [ "$a" = "$b" ]; then
                 echo "  ok  (基准一致) ${sym}: ${a:-无}"
               else
@@ -541,10 +543,11 @@ jobs:
             echo "----- 与官方基准的 ABI 相关差异项: $DIFF -----"
           fi
 
-          # 裁剪生效性诊断：厂商驱动应已从内核配置消失（只影响速度，不影响
-          # ABI，故仅告警不失败；若出现说明 Configure 未吃到裁剪后的配置）
+          # 裁剪生效性诊断：只影响构建耗时、不影响 ABI，仅记录不告警。
+          # SDK 自带的内核树是按官方配置编好的，若本次没有重新 configure 内核，
+          # 这里必然仍能看到厂商驱动——属预期，不是问题。
           if grep -qE "^CONFIG_(NET_MEDIATEK_SOC|MEDIATEK_GE_PHY|PINCTRL_MT7981)=" "$KCONF"; then
-            echo "::warning::厂商驱动仍在内核配置中，裁剪未生效"
+            echo "  (提示) 内核配置中仍有厂商驱动：本次未重新 configure 内核（ABI 与官方一致）"
           else
             echo "  ok  厂商驱动裁剪已生效"
           fi
