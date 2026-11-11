@@ -4,6 +4,16 @@
 
 ## [未发布]
 
+### 变更
+
+- **全仓 CI 复核（2026-11-12）**：`.github/workflows/build.yml` 共 13 处 `uses:` 统一升级到
+  当前最新大版本 —— `actions/checkout@v7`、`actions/upload-artifact@v7`、
+  `actions/download-artifact@v8`、`actions/cache/restore@v6` / `cache/save@v6`。
+- GitHub 已于 2026-09-23 从托管 runner 移除 Node 20 运行时，仍声明 `node20` 的 action 会被强制跑在 Node 24 上并打印 `Node.js 20 is deprecated` 告警，属于未验证状态；本次按各 action 的 `action.yml` 逐一核对 `runs.using` 后统一升级。
+- **仅改 CI 配置**：项目源码、`node-version` / `python-version` / `go-version` 等工具链版本、产物命名与 Release 流程均未改动。告警指的是 action 自身声明的运行时，不是项目构建所用的 Node 版本。
+  编译矩阵、ABI 校验门与 SDK 缓存键均未改动。
+- 升级后全仓复扫 59 个工作流/Action 文件：`node20` / `node16` / `node12` 引用残留为 0，所有 YAML 均可解析。
+
 ### 修复
 
 - **ImmortalWrt master 作业永久失败（`内核配置与官方固件不一致，终止发布`）**：
