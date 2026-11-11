@@ -72,7 +72,7 @@ jobs:
         run: echo "BUILD_START=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: 检出源码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: pkgsrc
           fetch-depth: 1
@@ -131,7 +131,7 @@ jobs:
       # 固定版本 SDK 可长期命中,快照 SDK 换包时自动失效。
       - name: 恢复 SDK 缓存
         id: cache-sdk
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: sdk
           key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile') }}
@@ -150,7 +150,7 @@ jobs:
       # 在 feeds 更新之前保存,保证缓存里是干净的 SDK,不含 feeds 与构建产物
       - name: 保存 SDK 缓存
         if: steps.cache-sdk.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: sdk
           key: sdk-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ hashFiles('pkgsrc/**/Makefile') }}
@@ -254,7 +254,7 @@ jobs:
       # 因此按自然周滚动、可用 restore-keys 前缀回退到上周的温缓存：
       # master 快照升级内核版本（约每 1-2 周）触发重编时，绝大多数对象直接命中。
       - name: 恢复 ccache 缓存
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: sdk/.ccache
           key: ccache-${{ matrix.tag }}-${{ steps.bucket.outputs.week }}
@@ -263,7 +263,7 @@ jobs:
 
       - name: 恢复 feeds 缓存
         id: cache-feeds
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: sdk/feeds
           key: feeds-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.bucket.outputs.week }}
@@ -284,7 +284,7 @@ jobs:
 
       - name: 保存 feeds 缓存
         if: steps.cache-feeds.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: sdk/feeds
           key: feeds-${{ matrix.tag }}-${{ steps.sdkurl.outputs.hash }}-${{ steps.bucket.outputs.week }}
@@ -332,7 +332,7 @@ jobs:
       # 配置编译的内核，让「生成内核配置覆盖层」静默失效，编出与官方固件不兼容的 .ko。
       - name: 恢复构建缓存
         id: cache-build
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             sdk/build_dir/target-*
@@ -465,7 +465,7 @@ jobs:
       - name: 保存 ccache 缓存
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: sdk/.ccache
           key: ccache-${{ matrix.tag }}-${{ steps.bucket.outputs.week }}
@@ -561,7 +561,7 @@ jobs:
       - name: 保存构建缓存
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             sdk/build_dir/target-*
@@ -585,7 +585,7 @@ jobs:
 
       - name: 上传构建日志（仅失败时）
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-log-${{ matrix.tag }}
           path: sdk/logs
@@ -593,7 +593,7 @@ jobs:
           retention-days: 7
 
       - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: airpi-fancontrol-${{ matrix.tag }}
           path: artifacts/*
@@ -618,10 +618,10 @@ jobs:
       contents: write
     steps:
       - name: 检出源码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 下载全部构建产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
 
