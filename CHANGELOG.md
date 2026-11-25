@@ -2,6 +2,36 @@
 
 本项目所有重要变更均记录于此文件，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [7.0.4] - 2026-11-26
+
+### 修复
+
+- **页面上点“静音 / 巡航 / 强冷 / 全速 / 应用到风扇”没有任何反应**：前端调用了
+  `ui.confirm()`，而现代 LuCI 的 `ui.js` 已没有这个接口（只有原生 `confirm()`
+  与 `ui.changes.confirm`）。只要当前处于智能温控模式，点击就会在 `command()`
+  里抛 `ui.confirm is not a function`，命令根本没有下发。改为基于
+  `ui.showModal` / `ui.hideModal` 的 `confirmAction()`，Escape 仍按取消处理。
+- **命令成功也会提示“设备返回失败”**：`fs.exec()` 返回 `{ code, stdout, stderr }`，
+  旧代码判断 `res.rc !== 0`（`undefined !== 0` 恒为真）。改为读取 `code`
+  （保留 `rc` 兼容），成功提示与失败提示才不再颠倒。
+- **“温控策略”表单无法保存**：档位字段的数组下标错位（`row[6] / row[7] / row[8]`），
+  选项名被写成中文标题、默认值取到不存在的 `row[8]`，三个占空比输入框恒为空并
+  校验失败；温度阈值的 `datatype` 也取错列（`min(120),max(duty_high)`）。修正为
+  `row[5] / row[6] / row[7]` 与 `row[3] / row[4]`。
+- **保存时 `uci/delete` 报“未找到资源”，配置被逐项抹掉**：LuCI 的 `rmempty`
+  默认为真，会把等于默认值以及被 `depends` 隐藏的项（`fan_driver=auto` 时的
+  `fan_gpio` / `fan_freq`）转成 `uci delete`；页脚一次保存会触发三批重复删除，
+  第二批删的键已不存在，rpcd 的整体删除失败。现在关闭 `rmempty` / `optional`
+  并置 `retain`，表单只写不删。
+- **点了保存、页面刷新后还是旧值**：页脚保存走 `View.handleSave` → 每个
+  `.cbi-map` 的 `map.save()` → 末尾 `renderContents()` 原地重渲染，本页三个表单
+  共用同一份 UCI 配置时会抛 `reading '_class'` 中断链路；且 `uci.save()` 只写入
+  rpcd 的会话暂存区，未调用 `uci.apply()` 时不会提交到 `/etc/config`。现在由
+  视图接管保存：`parse()` → `uci.save()` → `uci.apply()` → 刷新页面，不再原地
+  重渲染；“重载配置 / 导入配置 / 恢复出厂值”同样补上 `apply()`。
+- **三个表单根节点 id 重复**：均使用 `cbi-airpi-fan`，改为
+  `cbi-airpi-fan-curve` / `-sensors` / `-advanced`，避免按 id 查找命中错误表单。
+
 ## [未发布]
 
 ### 变更

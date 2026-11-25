@@ -63,6 +63,53 @@ function ctl(args) {
 	return fs.exec(CTL, args);
 }
 
+/*
+ * Promise 版确认框。
+ *
+ * 现代 LuCI 的 ui.js 没有 ui.confirm()（那是旧 Lua 时代的接口），直接调用会抛
+ * "ui.confirm is not a function"，点击事件在真正下发命令之前就中断——表现为
+ * 页面上的按钮"点了没反应"。这里用 ui.showModal/ui.hideModal 组合实现。
+ *
+ * LuCI 的 Escape 处理会点击 .right 里的第一个按钮，因此"取消"必须排在前面。
+ */
+function confirmAction(title, message, danger) {
+	if (typeof ui.showModal !== 'function' || typeof ui.hideModal !== 'function')
+		return Promise.resolve(window.confirm(title + '\n\n' + message));
+
+	return new Promise(function(resolve) {
+		var settled = false;
+
+		function close(value) {
+			if (settled)
+				return;
+			settled = true;
+			ui.hideModal();
+			resolve(value);
+		}
+
+		var children = [
+			E('p', {}, message),
+			E('div', { 'class': 'right' }, [
+				E('button', {
+					'class': 'btn', 'type': 'button',
+					'click': function(ev) { ev.preventDefault(); close(false); }
+				}, _('取消')),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button-' + (danger ? 'negative' : 'positive'),
+					'type': 'button',
+					'click': function(ev) { ev.preventDefault(); close(true); }
+				}, _('确定'))
+			])
+		];
+
+		if (danger)
+			ui.showModal(title, children, 'cbi-modal-danger');
+		else
+			ui.showModal(title, children);
+	});
+}
+
 function parseKV(text) {
 	var out = {};
 	String(text == null ? '' : text).split('\n').forEach(function(line) {
@@ -576,6 +623,27 @@ function sectionOf(m, title, description) {
 	return s;
 }
 
+/*
+ * 关闭 LuCI 的"等于默认值即删除"语义（CBIAbstractValue.rmempty 默认 true）。
+ *
+ * 保存时值等于 option.default 的项会被 CBIValue.parse() 转成 uci delete；
+ * 被 depends 隐藏的项（如 fan_driver=auto 时的 fan_gpio/fan_freq）也会被
+ * 直接删除。一次保存若产生多批相同的删除请求，第二批删的键已经不存在，
+ * rpcd 的 uci delete 会整体返回 NotFound，保存失败；即便只有一批，也会把
+ * /etc/config/airpi-fan 里带注释的出厂项逐条抹掉。
+ * 这里让所有项只写不删：值有变化或项缺失才写，保持不变或当前不生效就不动。
+ */
+function keepOptions(m) {
+	(m.children || []).forEach(function(s) {
+		(s.children || []).forEach(function(o) {
+			o.rmempty = false;
+			o.optional = false;
+			o.retain = true;
+		});
+	});
+	return m;
+}
+
 function makeCurveMap(self) {
 	var m = new form.Map(CONFIG, _('温控策略'),
 		_('温度阶梯曲线决定自动模式下的风扇占空比。修改后需保存并应用，守护进程会在下一个控制周期生效。'));
@@ -589,19 +657,19 @@ function makeCurveMap(self) {
 	].forEach(function(row) {
 		var t = s.option(form.Value, row[0], row[1],
 			_('温度达到该值时进入更高一档；回落超过迟滞量后才降档。'));
-		t.datatype = 'and(float,min(' + row[4] + '),max(' + row[5] + '))';
+		t.datatype = 'and(float,min(' + row[3] + '),max(' + row[4] + '))';
 		t.default = row[2];
 		t.validate = function(sid, value) {
 			var n = parseFloat(value);
 			if (isNaN(n))
 				return _('请输入温度数值');
-			if (n < row[4] || n > row[5])
-				return _('温度需在 %d 到 %d ℃ 之间').format(row[4], row[5]);
+			if (n < row[3] || n > row[4])
+				return _('温度需在 %d 到 %d ℃ 之间').format(row[3], row[4]);
 			return true;
 		};
-		var d = s.option(form.Value, row[6], row[7], _('0 为停转，255 为满速。'));
+		var d = s.option(form.Value, row[5], row[6], _('0 为停转，255 为满速。'));
 		d.datatype = 'and(uinteger,min(0),max(255))';
-		d.default = row[8];
+		d.default = row[7];
 		d.validate = function(sid, value) {
 			var n = parseInt(value, 10);
 			if (isNaN(n) || n < 0 || n > 255)
@@ -630,7 +698,7 @@ function makeCurveMap(self) {
 	hold.datatype = 'and(uinteger,min(0),max(600))';
 	hold.default = '30';
 
-	return m;
+	return keepOptions(m);
 }
 
 function makeSensorMap(self) {
@@ -653,7 +721,7 @@ function makeSensorMap(self) {
 	slow.datatype = 'and(uinteger,min(5),max(600))';
 	slow.default = '30';
 
-	return m;
+	return keepOptions(m);
 }
 
 function makeAdvancedMap(self) {
@@ -710,7 +778,7 @@ function makeAdvancedMap(self) {
 	loglevel.value('3', _('调试'));
 	loglevel.default = '2';
 
-	return m;
+	return keepOptions(m);
 }
 
 /* ------------------------------- 视图主体 ------------------------------- */
@@ -748,6 +816,7 @@ return view.extend({
 	refs: {},
 	history: [],
 	panels: {},
+	maps: [],
 	seq: 0,
 	tick: 0,
 	inflight: false,
@@ -932,6 +1001,7 @@ return view.extend({
 		this.buildSensors();
 
 		/* 三个表单各自归属一个标签页，渲染完成后放入对应面板；任一失败只影响该页 */
+		this.maps = [];
 		[['curve', makeCurveMap, self.onCurvePanelReady],
 			['sensors', makeSensorMap, null],
 			['advanced', makeAdvancedMap, self.onAdvancedPanelReady]].forEach(function(spec) {
@@ -940,7 +1010,13 @@ return view.extend({
 			var err = E('div', { 'class': 'ap-alert is-danger hidden' });
 			panel.appendChild(err);
 			panel.appendChild(host);
-			spec[1](self).render().then(function(el) {
+			var map = spec[1](self);
+			self.maps.push(map);
+			map.render().then(function(el) {
+				/* 三个 form.Map 读同一个 UCI 配置，默认根节点 id 都是
+				 * cbi-airpi-fan。同页重复 id 会让主题与 LuCI 的按 id 查找
+				 * 命中错误的那个表单。 */
+				el.id = 'cbi-airpi-fan-' + spec[0];
 				host.appendChild(el);
 				if (spec[2])
 					spec[2].call(self, panel);
@@ -1352,11 +1428,11 @@ return view.extend({
 
 		var chain = Promise.resolve();
 		if (dangerHint !== undefined && dangerHint !== null) {
-			chain = ui.confirm(_('危险操作确认'), [E('p', {}, dangerHint)], true);
+			chain = confirmAction(_('危险操作确认'), dangerHint, true);
 		} else if (args[0] !== 'auto' && this.status.mode === 'auto') {
-			chain = ui.confirm(_('退出智能温控'), [E('p', {},
+			chain = confirmAction(_('退出智能温控'),
 				_('切换到 %s 后，风扇将不再随温度自动调节。仅当温度超过临界值时温控守护会临时接管。')
-					.format(label))], true);
+					.format(label), true);
 		}
 
 		/* 返回整条链: 调用方(和离线测试)需要能等待命令真正落地 */
@@ -1366,7 +1442,10 @@ return view.extend({
 			self.setBusy(true);
 			return ctl(args).then(function(res) {
 				var kv = parseKV(res.stdout);
-				if (res.rc !== 0 || kv.result === 'fail')
+				/* fs.exec 返回 { code, stdout, stderr }，没有 rc 字段。
+				 * 旧代码判断 res.rc !== 0 恒为真，成功下发的命令也会被当成失败。 */
+				var rc = num(res && res.code, num(res && res.rc, 0));
+				if (rc !== 0 || kv.result === 'fail')
 					throw new Error(kv.error || (res.stderr || '').trim() || _('设备返回失败'));
 				self.sliderTouched = false;
 				ui.addNotification(null, E('p', {}, _('%s 已下发。').format(label)), 'info');
@@ -1857,9 +1936,62 @@ return view.extend({
 		});
 	},
 
+	/* ------------------------------ 表单保存 ------------------------------ */
+
+	/*
+	 * 接管页脚的"保存 / 保存并应用"。
+	 *
+	 * LuCI 的 View.handleSave 会对页面里每个 .cbi-map 调用 map.save()，
+	 * 而 map.save() 末尾必定 map.load() + renderContents() 就地重渲染。
+	 * 本页三个表单共用同一份 UCI 配置，又都放在自定义面板里，就地重渲染
+	 * 会踩到 LuCI 的 data-idref 注册表回收时机，抛 "reading '_class'"，
+	 * 保存后的应用阶段直接中断（表现为点了保存没反应、配置没落盘）。
+	 *
+	 * 这里只做 parse（写 UCI 暂存）→ uci.save（落盘）→ 整页刷新，
+	 * 不做原地重渲染；同时清掉未保存标记，避免刷新时弹 beforeunload。
+	 */
+	saveForms: function() {
+		var maps = this.maps || [];
+
+		return Promise.all(maps.map(function(map) {
+			return map.parse();
+		})).then(function() {
+			/* uci.save() 只把改动写进 rpcd 的会话暂存区，必须再 apply
+			 * 才会提交到 /etc/config；只 save 不 apply 的表现就是
+			 * "点了保存、页面刷新后还是旧值"。 */
+			return uci.save();
+		}).then(function() {
+			return uci.apply();
+		}).then(function() {
+			dirty.flag = false;
+			return ctl(['reload']).catch(function() { /* 配置已落盘即可 */ });
+		}).then(function() {
+			location.reload();
+		}).catch(function(e) {
+			ui.addNotification(null, E('p', {},
+				_('保存失败: ') + (e && e.message ? e.message : e)), 'error');
+		});
+	},
+
+	handleSave: function() {
+		return this.saveForms();
+	},
+
+	handleSaveApply: function() {
+		return this.saveForms();
+	},
+
+	/* 页脚的"重置"只丢弃未保存的编辑；恢复出厂值在高级设置里有独立入口 */
+	handleReset: function() {
+		dirty.flag = false;
+		location.reload();
+	},
+
 	reloadConfig: function() {
 		var self = this;
 		uci.save().then(function() {
+			return uci.apply();
+		}).then(function() {
 			dirty.flag = false;
 			return ctl(['reload']);
 		}).then(function(res) {
@@ -1967,7 +2099,9 @@ return view.extend({
 			uci.set(CONFIG, SECTION, key, accepted[key]);
 		});
 
-		uci.save().then(L.bind(function() {
+		uci.save().then(function() {
+			return uci.apply();
+		}).then(L.bind(function() {
 			dirty.flag = false;
 			ui.addNotification(null, E('p', {},
 				_('已写入 %d 项配置，页面将重新加载以反映新值。').format(Object.keys(accepted).length)
@@ -1980,8 +2114,8 @@ return view.extend({
 
 	restoreDefaults: function() {
 		var self = this;
-		ui.confirm(_('恢复出厂设置值'), [E('p', {}, _(
-			'将删除所有自定义项（驱动选择、温控曲线、安全兜底等），回到出厂默认。保存后守护进程在下一个控制周期应用，风扇不会中断。'))],
+		confirmAction(_('恢复出厂设置值'), _(
+			'将删除所有自定义项（驱动选择、温控曲线、安全兜底等），回到出厂默认。保存后守护进程在下一个控制周期应用，风扇不会中断。'),
 			true).then(function(proceed) {
 			if (!proceed)
 				return;
@@ -1991,6 +2125,8 @@ return view.extend({
 			});
 
 			return uci.save().then(function() {
+				return uci.apply();
+			}).then(function() {
 				dirty.flag = false;
 				return ctl(['reload']);
 			}).then(function() {
