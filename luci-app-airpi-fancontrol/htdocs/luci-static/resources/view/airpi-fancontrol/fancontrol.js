@@ -110,6 +110,61 @@ function confirmAction(title, message, danger) {
 	});
 }
 
+/*
+ * 气泡通知：固定定位在右下角，不参与文档流。
+ *
+ * 之前用 ui.addNotification()，主题会把它渲染成页头的一整行告警，一次点击
+ * 就往下推一段，连续操作几次页面就被挤走。这里自绘浮层，自动消失、可手动
+ * 关闭，且不改变页面布局。
+ */
+function toastHost() {
+	var host = document.getElementById('ap-toast-host');
+	if (!host) {
+		host = E('div', { 'id': 'ap-toast-host', 'class': 'ap-toast-host', 'role': 'status', 'aria-live': 'polite' });
+		document.body.appendChild(host);
+	}
+	var root = document.querySelector('.ap-root');
+	var dark = root && root.getAttribute('data-ap-theme') === 'dark';
+	host.classList.toggle('is-dark', !!dark);
+
+	/* 页脚"保存/重置"是 sticky 的，气泡若贴着视口底部会被它盖住 */
+	var offset = 16,
+		footer = document.querySelector('.cbi-page-actions');
+	if (footer) {
+		var fstyle = window.getComputedStyle(footer),
+			frect = footer.getBoundingClientRect();
+		if ((fstyle.position === 'fixed' || fstyle.position === 'sticky') && frect.height > 0)
+			offset = Math.max(offset, (parseFloat(fstyle.bottom) || 0) + frect.height + 12);
+	}
+	host.style.bottom = offset + 'px';
+	return host;
+}
+
+function notify(kind, message) {
+	var host = toastHost(),
+		timer = null,
+		node = E('div', { 'class': 'ap-toast is-' + (kind || 'info') }, [
+			E('div', { 'class': 'ap-toast-text' }, message),
+			E('button', {
+				'class': 'ap-toast-close', 'type': 'button', 'aria-label': _('关闭'),
+				'click': function(ev) { ev.preventDefault(); remove(); }
+			}, '\u00d7')
+		]);
+
+	function remove() {
+		if (timer) {
+			window.clearTimeout(timer);
+			timer = null;
+		}
+		if (node.parentNode)
+			node.parentNode.removeChild(node);
+	}
+
+	host.appendChild(node);
+	timer = window.setTimeout(remove, kind === 'error' ? 8000 : 4500);
+	return node;
+}
+
 function parseKV(text) {
 	var out = {};
 	String(text == null ? '' : text).split('\n').forEach(function(line) {
@@ -499,6 +554,24 @@ var CSS = String('') +
 	'.ap-alert.is-danger{border-color:var(--ap-danger);background:var(--ap-danger-soft);color:var(--ap-danger);}\n' +
 	'.ap-alert.is-info{border-color:var(--ap-accent);background:var(--ap-accent-soft);color:var(--ap-accent);}\n' +
 	'.ap-alert-body{flex:1 1 auto;color:var(--ap-text);}\n' +
+	/* 右下角气泡通知：position:fixed 脱离文档流，不再把页面往下挤 */
+	'.ap-toast-host{position:fixed;right:16px;bottom:16px;z-index:2147483000;display:flex;' +
+	'flex-direction:column-reverse;gap:8px;max-width:min(360px,calc(100vw - 32px));pointer-events:none;}\n' +
+	'.ap-toast{pointer-events:auto;display:flex;align-items:flex-start;gap:10px;padding:10px 12px;' +
+	'border-radius:12px;border:1px solid rgba(15,23,42,.12);border-left:3px solid #38bdf8;' +
+	'background:#fff;color:#0f172a;box-shadow:0 10px 28px rgba(15,23,42,.16);' +
+	'font-size:12.5px;line-height:1.5;animation:ap-toast-in .2s var(--ap-ease);}\n' +
+	'.ap-toast-host.is-dark .ap-toast{background:#0f1a26;color:#e8eef7;' +
+	'border-color:rgba(148,163,184,.28);box-shadow:0 12px 30px rgba(0,0,0,.45);}\n' +
+	'.ap-toast.is-info{border-left-color:#38bdf8;}\n' +
+	'.ap-toast.is-success{border-left-color:#34d399;}\n' +
+	'.ap-toast.is-warning{border-left-color:#fbbf24;}\n' +
+	'.ap-toast.is-error{border-left-color:#f87171;}\n' +
+	'.ap-toast-text{flex:1 1 auto;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;}\n' +
+	'.ap-toast-close{appearance:none;border:none;background:transparent;color:inherit;opacity:.55;' +
+	'font-size:16px;line-height:1;cursor:pointer;padding:0 2px;}\n' +
+	'.ap-toast-close:hover{opacity:1;}\n' +
+	'@keyframes ap-toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}\n' +
 	'.ap-levels{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));}\n' +
 	'.ap-level{display:flex;flex-direction:column;align-items:center;gap:3px;padding:13px 9px;' +
 	'border:1px solid var(--ap-border);border-radius:13px;background:var(--ap-bg-soft);' +
@@ -572,18 +645,31 @@ var CSS = String('') +
 	'.ap-form{font-size:13px;}\n' +
 	'.ap-form .cbi-section{background:transparent!important;border:none!important;' +
 	'padding:0!important;margin:0!important;box-shadow:none!important;}\n' +
-	'.ap-form .cbi-value{padding:9px 0!important;border-bottom:1px dashed var(--ap-border);' +
-	'display:flex!important;gap:12px;align-items:flex-start;}\n' +
+	/* 表单对齐：主题默认标签列 34%（约 400px）、控件宽度随类型变化，' +
+	'下拉框与文本框左右不齐。统一为固定标签列 + 同宽控件。 */
+	'.ap-form .cbi-value{display:grid!important;grid-template-columns:190px minmax(0,1fr)!important;' +
+	'gap:2px 16px!important;align-items:start!important;padding:9px 0!important;' +
+	'border-bottom:1px dashed var(--ap-border);}\n' +
 	'.ap-form .cbi-value:last-of-type{border-bottom:none;}\n' +
-	'.ap-form .cbi-value-title{width:34%!important;min-width:150px!important;padding:6px 0 0!important;' +
+	'.ap-form .cbi-value-title{float:none!important;width:auto!important;min-width:0!important;' +
+	'display:block!important;padding:9px 0 0!important;text-align:left!important;' +
 	'font-size:12.5px!important;font-weight:650!important;color:var(--ap-text)!important;}\n' +
-	'.ap-form .cbi-value-field{flex:1 1 auto!important;}\n' +
+	'.ap-form .cbi-value-field{float:none!important;width:auto!important;min-width:0!important;}\n' +
 	'.ap-form .cbi-value-description{font-size:11.5px!important;color:var(--ap-text-dim)!important;' +
-	'margin-top:4px!important;}\n' +
-	'.ap-form input[type="text"],.ap-form input[type="password"],.ap-form select,.ap-form textarea' +
-	'{border-radius:10px!important;border:1px solid var(--ap-border)!important;' +
+	'margin-top:5px!important;max-width:560px;}\n' +
+	'.ap-form .cbi-section>h3{font-size:13px!important;font-weight:700!important;' +
+	'letter-spacing:.02em;color:var(--ap-text)!important;margin:18px 0 2px!important;' +
+	'padding:0 0 8px 0!important;text-align:left!important;border-bottom:1px solid var(--ap-border);}\n' +
+	'.ap-form .cbi-section:first-child>h3{margin-top:2px!important;}\n' +
+	'.ap-form .cbi-section-descr{font-size:12px!important;color:var(--ap-text-muted)!important;' +
+	'margin:4px 0 6px!important;}\n' +
+	'.ap-form input[type="text"],.ap-form input[type="password"],.ap-form select,.ap-form textarea,' +
+	'.ap-form .cbi-input-text,.ap-form .cbi-input-select' +
+	'{border-radius:10px!important;border:1px solid var(--ap-border)!important;min-width:0!important;' +
 	'background:var(--ap-bg-soft)!important;color:var(--ap-text)!important;padding:8px 11px!important;' +
-	'min-height:36px;font-size:13px!important;max-width:220px;}\n' +
+	'min-height:36px;font-size:13px!important;width:100%!important;max-width:340px!important;' +
+	'box-sizing:border-box!important;}\n' +
+	'.ap-form .cbi-value-field .cbi-checkbox{justify-content:flex-start!important;}\n' +
 	'.ap-form input:focus-visible,.ap-form select:focus-visible{outline:2px solid var(--ap-accent);' +
 	'outline-offset:1px;}\n' +
 	'.ap-form .cbi-button{border-radius:10px!important;font-weight:650!important;}\n' +
@@ -817,6 +903,7 @@ return view.extend({
 	history: [],
 	panels: {},
 	maps: [],
+	pending: null,
 	seq: 0,
 	tick: 0,
 	inflight: false,
@@ -879,6 +966,21 @@ return view.extend({
 	applyStatus: function(st) {
 		if (!st || !Object.keys(st).length)
 			return;
+
+		/* 手动/无级命令刚下发时，守护进程状态文件还没走过一轮（最长
+		 * interval 秒），快照里的 mode/fanval/duty 仍是旧值。在快照
+		 * 时间戳真正超过命令时刻之前，保留本地回填值，避免刚点完档位
+		 * 又被旧快照弹回去。 */
+		if (this.pending) {
+			if (num(st.ts, 0) > this.pending.ts) {
+				this.pending = null;
+			} else {
+				var patch = this.pending.patch;
+				Object.keys(patch).forEach(function(key) {
+					st[key] = patch[key];
+				});
+			}
+		}
 
 		this.status = st;
 
@@ -1448,15 +1550,52 @@ return view.extend({
 				if (rc !== 0 || kv.result === 'fail')
 					throw new Error(kv.error || (res.stderr || '').trim() || _('设备返回失败'));
 				self.sliderTouched = false;
-				ui.addNotification(null, E('p', {}, _('%s 已下发。').format(label)), 'info');
+				self.applyCommandLocally(args);
+				notify('success', _('%s 已下发。').format(label));
 			}).catch(function(e) {
-				ui.addNotification(null, E('p', {},
-					_('%s 失败: %s').format(label, e && e.message ? e.message : e)), 'error');
+				notify('error', _('%s 失败: %s').format(label, e && e.message ? e.message : e));
 			}).then(function() {
 				self.setBusy(false);
 				return self.fetch();
 			});
 		}).catch(function() { /* 用户取消确认框 */ });
+	},
+
+	/*
+	 * 手动/无级命令直接写在 fanvall 与风扇接口上，但快照来自守护进程每
+	 * interval 秒写一次的状态文件（最长 8s 滞后）。这里先按命令回填，
+	 * 页面立即反映新值；下一轮轮询若发现差异会自然纠正。
+	 */
+	applyCommandLocally: function(args) {
+		var st = this.status || (this.status = {}),
+			cmd = args[0],
+			patch = {};
+
+		if (cmd === 'auto') {
+			patch = {
+				mode: 'auto',
+				mode_code: '9',
+				fanval: '9'
+			};
+		} else if (cmd === 'set' || cmd === 'stepless') {
+			var duty = String(args[1]);
+			patch = {
+				mode: (cmd === 'set') ? 'manual' : 'stepless',
+				mode_code: (cmd === 'set') ? String(args[2]) : '999',
+				fanval: (cmd === 'set') ? String(args[2]) : '999',
+				duty: duty,
+				duty_sysfs: duty,
+				fanspd: duty,
+				duty_source: 'written'
+			};
+		} else {
+			return;
+		}
+
+		Object.keys(patch).forEach(function(key) { st[key] = patch[key]; });
+		st.ts = String(Math.floor(Date.now() / 1000));
+		this.pending = { ts: Math.floor(Date.now() / 1000), patch: patch };
+		this.paint();
 	},
 
 	setBusy: function(busy) {
@@ -1518,7 +1657,7 @@ return view.extend({
 				E('span', { 'class': 'ap-dot' + (daemonAlive ? ' ap-dot-live' : '') }),
 				daemonAlive ? _('守护进程运行中') : _('温控服务未运行'),
 				' · ', agoText(age)
-			], tone2), ' ', pill(_('轮询 #%1$d · 采样 #%2$d').format(this.tick, this.history.length), 'muted')]);
+			], tone2), ' ', pill(_('轮询 #%d · 采样 #%d').format(this.tick, this.history.length), 'muted')]);
 		}
 
 		this.paintAlerts(st, daemonAlive, alarm);
@@ -1741,7 +1880,9 @@ return view.extend({
 			btn.setAttribute('aria-pressed', active ? 'true' : 'false');
 		}, this);
 
-		if (this.refs.slider && mode === 'stepless' && !this.sliderTouched)
+		/* 滑块始终反映接口当前值（自动/手动模式也一样），正在拖动时才让位给
+		 * 用户的预览值，避免"模式切到无级后滑块还停在旧的 128"。 */
+		if (this.refs.slider && !this.sliderTouched)
 			this.refs.slider.value = String(duty);
 		if (this.refs.sliderText) {
 			var v = num(this.refs.slider ? this.refs.slider.value : duty, 0);
@@ -1966,10 +2107,10 @@ return view.extend({
 			dirty.flag = false;
 			return ctl(['reload']).catch(function() { /* 配置已落盘即可 */ });
 		}).then(function() {
-			location.reload();
+			notify('success', _('配置已保存，守护进程将在下一个控制周期应用。'));
+			window.setTimeout(function() { location.reload(); }, 600);
 		}).catch(function(e) {
-			ui.addNotification(null, E('p', {},
-				_('保存失败: ') + (e && e.message ? e.message : e)), 'error');
+			notify('error', _('保存失败: ') + (e && e.message ? e.message : e));
 		});
 	},
 
@@ -1996,13 +2137,13 @@ return view.extend({
 			return ctl(['reload']);
 		}).then(function(res) {
 			var kv = parseKV(res.stdout);
-			ui.addNotification(null, E('p', {},
+			notify('success',
 				kv.reloaded === 'daemon'
 					? _('配置已保存，守护进程将在下一个控制周期应用（无需重启，风扇不会中断）。')
-					: _('配置已保存并拉起温控服务。')), 'info');
+					: _('配置已保存并拉起温控服务。'));
 			return self.fetch();
 		}).catch(function(e) {
-			ui.addNotification(null, E('p', {}, _('重载失败: ') + (e && e.message ? e.message : e)), 'error');
+			notify('error', _('重载失败: ') + (e && e.message ? e.message : e));
 		});
 	},
 
@@ -2090,8 +2231,7 @@ return view.extend({
 		});
 
 		if (!Object.keys(accepted).length) {
-			ui.addNotification(null, E('p', {},
-				_('没有可导入的配置项。') + (problems.length ? '\n' + problems.join('\n') : '')), 'error');
+			notify('error', _('没有可导入的配置项。') + (problems.length ? '\n' + problems.join('\n') : ''));
 			return;
 		}
 
@@ -2103,12 +2243,12 @@ return view.extend({
 			return uci.apply();
 		}).then(L.bind(function() {
 			dirty.flag = false;
-			ui.addNotification(null, E('p', {},
+			notify('success',
 				_('已写入 %d 项配置，页面将重新加载以反映新值。').format(Object.keys(accepted).length)
-				+ (problems.length ? _('（已跳过 %d 项无效内容）').format(problems.length) : '')), 'info');
-			location.reload();
+				+ (problems.length ? _('（已跳过 %d 项无效内容）').format(problems.length) : ''));
+			window.setTimeout(function() { location.reload(); }, 700);
 		}, this)).catch(function(e) {
-			ui.addNotification(null, E('p', {}, _('保存失败: ') + (e && e.message ? e.message : e)), 'error');
+			notify('error', _('保存失败: ') + (e && e.message ? e.message : e));
 		});
 	},
 
@@ -2130,12 +2270,12 @@ return view.extend({
 				dirty.flag = false;
 				return ctl(['reload']);
 			}).then(function() {
-				ui.addNotification(null, E('p', {}, _('已恢复出厂设置值并保存。')), 'info');
+				notify('success', _('已恢复出厂设置值并保存。'));
 				location.hash = '#advanced';
-				location.reload();
+				window.setTimeout(function() { location.reload(); }, 700);
 			});
 		}).catch(function(e) {
-			ui.addNotification(null, E('p', {}, _('恢复默认失败: ') + (e && e.message ? e.message : e)), 'error');
+			notify('error', _('恢复默认失败: ') + (e && e.message ? e.message : e));
 		});
 	}
 });
